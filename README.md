@@ -1,5 +1,8 @@
 # Guardian
 
+> **New here? Read [context.md](context.md) first** — a self-contained briefing
+> for teammates, judges, and AI assistants.
+
 A **policy-enforced control plane for autonomous AI agents** — a trusted
 execution layer that supervises every financial action an AI agent can take.
 

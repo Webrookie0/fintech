@@ -34,6 +34,12 @@ so that critical financial controls exist separately from the agent itself.
 
 ## 2. High-level architecture
 
+![Guardian architecture flowchart](architecture-flowchart.png)
+
+> *Vector version: [architecture-flowchart.svg](architecture-flowchart.svg) —
+> opens crisply in any browser, great for slides. The Mermaid diagram below is
+> the editable source.*
+
 ```mermaid
 flowchart TD
     subgraph UZ["UNTRUSTED ZONE"]
