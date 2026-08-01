@@ -1,0 +1,34 @@
+# Guardian policy — deterministic, cannot be modified by the autonomous agent.
+
+policy:
+  daily_budget_usd: 20.0
+  max_per_transaction_usd: 10.0
+  allowlist_recipients:
+    - OpenAI
+    - Supabase
+    - Anthropic
+    - Tavily
+  blocklist_recipients: []
+  allowlist_domains:
+    - api.openai.com
+    - supabase.com
+    - api.anthropic.com
+    - api.tavily.com
+  max_retries: 3
+  max_snapshots_without_progress: 4
+  max_estimated_tokens_per_task: 50000
+
+wallet:
+  starting_balance_usd: 25.0
+
+agent:
+  goal: "Build a working authentication feature for a web app"
+  max_steps: 30
+
+llm:
+  # auto = first provider that has a key (gemini, then openai, then groq); mock = no network
+  provider: "auto"
+  judge_model: ""
+
+demo:
+  beat_delay_seconds: 0.4

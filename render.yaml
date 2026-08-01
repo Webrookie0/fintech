@@ -1,0 +1,22 @@
+# Render blueprint — deploy "Guardian" as a free web service.
+# Push this repo to GitHub, then in Render: New → Blueprint → select repo.
+# Or manually: New Web Service → repo → Runtime: Docker.
+services:
+  - type: web
+    name: guardian
+    runtime: docker
+    plan: free
+    healthCheckPath: /healthz
+    envVars:
+      - key: PORT
+        value: 8000
+      # SET THIS before first deploy: opens a browser and edit → Environment,
+      # or use a value unique to your team. Guards the kill switch + demo buttons.
+      - key: GUARDIAN_ADMIN_TOKEN
+        value: demo
+      # Optional: free-tier LLM keys. The judge degrades to a deterministic
+      # heuristic if none are present, so the demo works without them.
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false

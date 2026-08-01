@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Guardian — Policy-Enforced Control Plane</title>
+<link rel="stylesheet" href="/static/style.css">
+</head><body>
+<nav id="nav">
+  <div class="brand">GUARDIAN<small>policy-enforced control plane</small></div>
+  <div class="grp">Observe</div>
+  <a href="#overview" data-v="overview">Overview</a>
+  <a href="#requests" data-v="requests">Requests <span class="n" id="n-req"></span></a>
+  <a href="#snapshots" data-v="snapshots">Snapshots</a>
+  <a href="#wallet" data-v="wallet">Wallet</a>
+  <a href="#policy" data-v="policy">Policy</a>
+  <a href="#audit" data-v="audit">Audit</a>
+</nav>
+<main>
+  <header class="pagehead">
+    <h1 id="title">Overview</h1>
+    <div class="sub" id="sub"></div>
+  </header>
+  <div id="statusbar"></div>
+  <div id="view"></div>
+</main>
+<aside id="dock">
+  <div class="dockhead"><span class="dt">Demo Console</span></div>
+  <div class="dockbody">
+    <p class="hint">Run scripted beats and watch the enforcement layer work live. Every action lands in the audit trail.</p>
+    <div class="grp2">Demo beats</div>
+    <button id="btn-alldemo" class="btn" style="border-color:var(--brand);color:var(--brand)"><span>▶ Run full demo <div class="k">approve → reject → bypass → loop → kill</div></span></button>
+    <div id="beat-buttons"></div>
+    <div class="grp2">Controls</div>
+    <button id="btn-kill" class="btn danger">Kill switch ON</button>
+    <button id="btn-unkill" class="btn ok">Release kill switch</button>
+    <button id="btn-reset" class="btn ghost">Reset demo</button>
+    <div id="admin-row" hidden><input id="admin-token" placeholder="admin token" autocomplete="off"><button id="btn-save-token" class="btn ghost">set</button></div>
+  </div>
+</aside>
+<script src="/static/js/util.js"></script>
+<script src="/static/js/views.js"></script>
+<script src="/static/js/main.js"></script>
+</body></html>
