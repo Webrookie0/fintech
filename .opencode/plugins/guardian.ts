@@ -33,6 +33,19 @@
 import type { Plugin } from "@opencode-ai/plugin"
 
 const GUARDIAN_URL = process.env.GUARDIAN_URL || "http://localhost:8000"
+// Plugin log file. opencode's own log only records permission checks — plugin
+// console output goes to the (invisible) sidecar stdout. Write a real file so
+// the plugin's activity is tailable:  tail -f /tmp/guardian-plugin.log
+const PLUGIN_LOG = process.env.GUARDIAN_PLUGIN_LOG || "/tmp/guardian-plugin.log"
+
+function log(line: string) {
+  const ts = new Date().toISOString()
+  console.log(`[guardian] ${line}`)
+  try {
+    const { Bun } = globalThis as any
+    if (Bun?.write) void Bun.write(PLUGIN_LOG, `${ts} ${line}\n`, { append: true })
+  } catch {}
+}
 // The plugin identifies itself to Guardian with a DEVICE TOKEN. Every account
 // gets one (shown on the dashboard's Connect tab). Teammates set
 //   export GUARDIAN_DEVICE_TOKEN="..."
@@ -149,7 +162,7 @@ async function heartbeat(input: {
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     return true
   } catch (e) {
-    console.warn(`[guardian] heartbeat failed (Guardian offline?): ${(e as Error).message}`)
+    log(`heartbeat failed (Guardian offline?): ${(e as Error).message}`)
     return false
   }
 }
@@ -182,10 +195,10 @@ async function postCheckpoint(sessionID: string, contextPath: string) {
     s.toolTrail = []
     // A fresh checkpoint satisfies the stale-guard — lift any sticky block.
     blockReasons.delete(sessionID)
-    console.log(`[guardian] checkpoint → ${s.verdict.status}: ${s.verdict.reason || ""}`)
+    log(`checkpoint → ${s.verdict.status}: ${s.verdict.reason || ""}`)
   } catch (e) {
     // Guardian offline: do not block the developer's work. Log and continue.
-    console.warn(`[guardian] checkpoint POST failed: ${(e as Error).message}`)
+    log(`checkpoint POST failed: ${(e as Error).message}`)
   }
 }
 
@@ -207,7 +220,7 @@ async function toast(client: any, message: string, variant: "info" | "success" |
 export const GuardianPlugin: Plugin = async ({ client, directory, project }) => {
   // GUARDIAN_BYPASS=1: no-op. Nothing registers, nothing blocks, nothing toasts.
   if (BYPASS) {
-    console.log("[guardian] GUARDIAN_BYPASS=1 — plugin disabled (no-op escape hatch)")
+    log("GUARDIAN_BYPASS=1 — plugin disabled (no-op escape hatch)")
     return {}
   }
 
@@ -311,9 +324,12 @@ export const GuardianPlugin: Plugin = async ({ client, directory, project }) => 
       // Always allow the context.md publish itself (reads too) so the model
       // can always write its state — EVEN while the stale-checkpoint guard is
       // active. Checked FIRST so the agent can always escape the block.
+      // NOTE: in tool.execute.before the tool ARGS arrive in the `output`
+      // parameter (input carries only {tool, sessionID, callID}), so reading
+      // input.args was always undefined and the escape hatch never fired.
       const isContextWrite =
         ["write", "edit", "patch"].includes(input.tool) &&
-        isContextPath((input as any).args?.filePath)
+        isContextPath((output as any)?.args?.filePath)
       if (isContextWrite) return
 
       // Read-only tools are never blocked — paused sessions must stay able to
@@ -341,6 +357,7 @@ export const GuardianPlugin: Plugin = async ({ client, directory, project }) => 
       // regardless of the verdict or the stale guard — that is the escape hatch.
       if (s.verdict.override) {
         blockReasons.delete(input.sessionID)
+        log(`override active — session ${input.sessionID} allowed through gate`)
         return
       }
 
@@ -349,6 +366,7 @@ export const GuardianPlugin: Plugin = async ({ client, directory, project }) => 
         if (mode === "ask") {
           void toast(client, `Guardian: ${reason} — Allow for 5 min on the dashboard`, "warning")
         }
+        log(`BLOCKED ${input.tool}: ${reason} (mode=${mode})`)
         throw new Error(`[guardian] ${reason}`)
       }
 
@@ -357,6 +375,7 @@ export const GuardianPlugin: Plugin = async ({ client, directory, project }) => 
         if (mode === "ask") {
           void toast(client, `Guardian: session ${s.verdict.status} — Allow for 5 min on the dashboard to continue`, "warning")
         }
+        log(`BLOCKED ${input.tool}: session ${s.verdict.status} — ${why} (mode=${mode})`)
         throw new Error(`[guardian] session ${s.verdict.status}: ${why}`)
       }
     },
