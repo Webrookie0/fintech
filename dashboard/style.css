@@ -148,5 +148,13 @@ td .btn.danger { border-color: rgba(248,113,113,.5); color: var(--red); }
 
 .mono { font-family: var(--mono); }
 .muted { color: var(--muted); }
+.copyblock { position: relative; margin: 4px 0 10px; }
+.copyblock pre {
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  padding: 12px; overflow-x: auto; font-family: var(--mono); font-size: 12.5px;
+  line-height: 1.55; color: var(--text); margin: 0; white-space: pre-wrap;
+}
+.copyblock .btn { position: relative; z-index: 1; }
+
 .spin { display:inline-block; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }

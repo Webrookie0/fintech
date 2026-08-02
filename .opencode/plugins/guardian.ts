@@ -33,7 +33,17 @@
 import type { Plugin } from "@opencode-ai/plugin"
 
 const GUARDIAN_URL = process.env.GUARDIAN_URL || "http://localhost:8000"
-const GUARDIAN_TOKEN = process.env.GUARDIAN_ADMIN_TOKEN || "demo"
+// The plugin identifies itself to Guardian with a DEVICE TOKEN. Every account
+// gets one (shown on the dashboard's Connect tab). Teammates set
+//   export GUARDIAN_DEVICE_TOKEN="..."
+// so their instances + reasoning sessions are attributed to THEIR account and
+// appear only in their dashboard. Falls back to GUARDIAN_ADMIN_TOKEN / demo
+// for local dev and legacy setups (those instances show up unowned — visible
+// to everyone).
+const GUARDIAN_TOKEN =
+  process.env.GUARDIAN_DEVICE_TOKEN ||
+  process.env.GUARDIAN_ADMIN_TOKEN ||
+  "demo"
 const CONTEXT_FILE = process.env.GUARDIAN_CONTEXT_FILE || "context.md"
 // Stale-guard: block only after 4 idle turns without a fresh checkpoint
 // (warning toast at 2). This is intentionally generous so a brand-new session

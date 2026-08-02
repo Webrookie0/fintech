@@ -38,6 +38,7 @@ function tKey(iso) {
 function post(path, body, token) {
   const headers = { "Content-Type": "application/json" };
   if (token) headers["X-Admin-Token"] = token;
+  if (typeof SESSION_TOKEN !== "undefined" && SESSION_TOKEN) headers["X-Session-Token"] = SESSION_TOKEN;
   return fetch(path, {
     method: "POST",
     headers,

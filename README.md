@@ -79,9 +79,14 @@ curl -X POST localhost:8000/api/reset    -H "X-Admin-Token: demo"
 | `POST /api/snapshot` | — (agent) | post a context snapshot (loop detection) |
 | `POST /api/retry` | — (agent) | record a retry |
 | `POST /api/checkpoint` | — (opencode plugin) | post context.md + tool trail → reasoning verdict |
-| `GET /api/reasoning` | — | checkpoint trail / sessions |
+| `POST /api/auth/register` `{email,password}` | — | open registration (first account becomes admin) |
+| `POST /api/auth/login` `{email,password}` | — | get a session token (send as `X-Session-Token`) |
+| `POST /api/auth/logout` | session | invalidate the session |
+| `GET /api/auth/me` | session | current account (email, device_token, is_admin) |
+| `GET /plugin/guardian.ts` | — | download the opencode plugin (Connect tab curl) |
+| `GET /api/reasoning` | — | checkpoint trail / sessions (scoped to your account) |
 | `GET /api/reasoning/gate` | — | sync gate: is this session allowed to act? `{status, reason, mode, override}` |
-| `GET /api/data` | — | full dashboard payload |
+| `GET /api/data` | — | full dashboard payload (scoped to your account) |
 | `GET /api/events?cursor=N` | — | incremental audit events |
 | `POST /api/reasoning/mode` `{mode}` | admin | switch enforce / watch / ask at runtime |
 | `POST /api/reasoning/override` `{session_id, minutes?/until_closed?}` | admin | open the gate for a session (5 min or until closed) |
@@ -96,6 +101,24 @@ curl -X POST localhost:8000/api/reset    -H "X-Admin-Token: demo"
 
 Admin calls require the header `X-Admin-Token` (env `GUARDIAN_ADMIN_TOKEN`,
 default `demo`). **Set a real token before deploying publicly.**
+
+## Accounts (per-user isolation)
+
+The dashboard is login-gated. Registration is open; the **first** account
+created becomes the **admin** and sees every device + session and can change
+the global supervision mode. Every other account only sees what was registered
+with its own **device token**.
+
+- A teammate signs up, opens the **Connect** tab, and copies their install
+  commands — including their private `GUARDIAN_DEVICE_TOKEN`.
+- They paste it into their `~/.zshrc`, restart opencode, and their instances
+  + reasoning sessions show up only on **their** dashboard.
+- The plugin falls back to `GUARDIAN_ADMIN_TOKEN` / `demo` when no device token
+  is set, so local dev and legacy setups still work (those instances show up
+  unowned — visible to everyone).
+- **Users control their own sessions**: override / top-up / resume / terminate
+  work for the session's owner (or admin). The global mode switch + kill switch
+  stay admin-only because they affect every user.
 
 ## Deploy to Render
 

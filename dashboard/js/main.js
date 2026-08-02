@@ -6,6 +6,7 @@ const TABS = {
   requests: { title: "Requests", render: renderRequests },
   snapshots: { title: "Snapshots", render: renderSnapshots },
   reasoning: { title: "Reasoning", render: renderReasoning },
+  connect: { title: "Connect", render: renderConnect },
   wallet: { title: "Wallet", render: renderWallet },
   policy: { title: "Policy", render: renderPolicy },
   audit: { title: "Audit", render: renderAudit },
@@ -23,10 +24,22 @@ const BEATS = {
 
 let DATA = null;
 let ADMIN_TOKEN = localStorage.getItem("guardian_token") || "demo";
+let SESSION_TOKEN = localStorage.getItem("guardian_session") || "";
 let BUSY = false;
 let LAST_SIG = null;
 
 function $id(x) { return document.getElementById(x); }
+
+// fetch with auth headers (session token + optional admin token).
+async function fetchAuth(path, opts = {}) {
+  const headers = Object.assign({}, opts.headers || {});
+  if (SESSION_TOKEN) headers["X-Session-Token"] = SESSION_TOKEN;
+  return fetch(path, Object.assign({}, opts, { headers }));
+}
+
+function postAuth(path, body, useAdmin) {
+  return post(path, body, useAdmin ? ADMIN_TOKEN : null);
+}
 
 // Lightweight fingerprint of the payload — only re-render when the state we
 // show actually changed. Without this, the audit trail and statusbar rebuild
@@ -42,17 +55,30 @@ function payloadSig(d) {
     d.mode || "enforce",
     (d.instances || []).map((i) => i.connected + ":" + (i.last_seen | 0)).join(","),
     (d.reasoning_sessions || []).map((s) => (s.override ? 1 : 0) + ":" + s.status).join(","),
+    (d.auth && d.auth.email) || "",
   ].join("|");
 }
 
 async function refresh() {
   try {
-    const r = await fetch("/api/data");
+    const r = await fetchAuth("/api/data");
+    if (r.status === 401) {
+      SESSION_TOKEN = "";
+      localStorage.removeItem("guardian_session");
+    }
     DATA = await r.json();
   } catch (e) {
     $id("sub").textContent = "offline — " + e.message;
     return;
   }
+  const auth = DATA.auth || {};
+  if (!auth.authenticated) {
+    renderAuth();
+    return;
+  }
+  $id("auth-screen").hidden = true;
+  $id("account-link").textContent = auth.is_admin ? auth.email + " · admin" : auth.email;
+  $id("account-link").href = "#connect";
   // If the server runs the default token ("demo"), a stale token saved in
   // localStorage (e.g. from an earlier custom setup) must not override it —
   // otherwise every admin call 403s with "invalid admin token".
@@ -60,7 +86,7 @@ async function refresh() {
     ADMIN_TOKEN = "demo";
     localStorage.removeItem("guardian_token");
   }
-  $id("admin-row").hidden = !DATA.admin_required;
+  $id("admin-row").hidden = !DATA.admin_required || !auth.is_admin;
   const sig = payloadSig(DATA);
   if (sig === LAST_SIG) return; // nothing changed — keep the current view static
   LAST_SIG = sig;
@@ -105,7 +131,11 @@ function renderStatusbar() {
 function renderModeControl() {
   const sel = $id("mode-select");
   const hint = $id("mode-hint");
+  const row = $id("mode-row");
   if (!sel) return;
+  const auth = (DATA && DATA.auth) || {};
+  // Mode is global (affects every user) — only admins can change it.
+  if (row) row.hidden = !auth.is_admin;
   const mode = DATA ? DATA.mode || "enforce" : "enforce";
   sel.value = mode;
   const hints = {
@@ -205,6 +235,20 @@ function wireControls() {
     try { await post("/api/reasoning/mode", { mode }, ADMIN_TOKEN); refresh(); }
     catch (e) { alert(e.message); }
   };
+  $id("account-link").onclick = (ev) => {
+    ev.preventDefault();
+    logout();
+  };
+}
+
+async function logout() {
+  try { await fetchAuth("/api/auth/logout", { method: "POST" }); } catch {}
+  SESSION_TOKEN = "";
+  localStorage.removeItem("guardian_session");
+  DATA = null;
+  LAST_SIG = null;
+  location.hash = "#overview";
+  refresh();
 }
 
 function boot() {

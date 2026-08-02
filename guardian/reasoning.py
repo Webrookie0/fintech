@@ -170,6 +170,7 @@ class CheckpointDB:
                 CREATE TABLE IF NOT EXISTS checkpoints (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT NOT NULL,
+                    owner TEXT NOT NULL DEFAULT '',
                     ts TEXT NOT NULL,
                     digest TEXT NOT NULL,
                     context_md TEXT NOT NULL,
@@ -184,10 +185,15 @@ class CheckpointDB:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_cp_session ON checkpoints (session_id, id)"
             )
+            # Migration for DBs created before the owner column existed.
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(checkpoints)")}
+            if "owner" not in cols:
+                conn.execute("ALTER TABLE checkpoints ADD COLUMN owner TEXT NOT NULL DEFAULT ''")
 
-    def add(self, session_id: str, context_md: str, embedding: list[float], todos, tool_trail) -> int:
+    def add(self, session_id: str, context_md: str, embedding: list[float], todos, tool_trail, owner: str = "") -> int:
         rec = (
             session_id,
+            owner or "",
             _today_ts(),
             _digest(context_md),
             context_md,
@@ -197,8 +203,8 @@ class CheckpointDB:
         )
         with self._lock, self._connect() as conn:
             cur = conn.execute(
-                "INSERT INTO checkpoints (session_id, ts, digest, context_md, embedding, todos, tool_trail) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO checkpoints (session_id, owner, ts, digest, context_md, embedding, todos, tool_trail) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 rec,
             )
             return int(cur.lastrowid)
@@ -221,7 +227,8 @@ class CheckpointDB:
     def all_sessions(self, n: int = 50) -> list[dict]:
         with self._lock, self._connect() as conn:
             rows = conn.execute(
-                "SELECT session_id, MAX(id) as last_id, COUNT(*) as n FROM checkpoints "
+                "SELECT session_id, MAX(id) as last_id, COUNT(*) as n, "
+                "MAX(owner) as owner FROM checkpoints "
                 "GROUP BY session_id ORDER BY last_id DESC LIMIT ?",
                 (n,),
             ).fetchall()
@@ -449,8 +456,21 @@ class ReasoningTrail:
         session_id,
         {"status": "running", "reason": "", "paused_count": 0, "violations": 0,
          "warnings": 0, "trail": [], "anchor_goal": "", "stall_streak": 0,
-         "override_until": 0.0},
+         "override_until": 0.0, "owner": ""},
             )
+
+    def owner(self, session_id: str) -> str:
+        """The user (id) that owns this session's checkpoints, or ''."""
+        with self._lock:
+            st = self._sessions.get(session_id)
+            return st.get("owner", "") if st else ""
+
+    def owns(self, session_id: str, user_id: int | str | None) -> bool:
+        """True if `user_id` owns this session (or the session has no owner)."""
+        owner = self.owner(session_id)
+        if not owner or not user_id:
+            return not owner
+        return owner == str(user_id)
 
     def status(self, session_id: str) -> dict:
         st = self._state(session_id)
@@ -563,11 +583,14 @@ class ReasoningTrail:
         return {"mode": self.mode}
 
     # --- record a checkpoint + decide -----------------------------------------
-    def record(self, session_id: str, context_md: str, todos=None, tool_trail=None) -> dict:
+    def record(self, session_id: str, context_md: str, todos=None, tool_trail=None, owner: str = "") -> dict:
         session_id = session_id or "default"
         todos = todos or []
         tool_trail = tool_trail or []
         st = self._state(session_id)
+        if owner:
+            with self._lock:
+                st["owner"] = str(owner)
 
         with self._lock:
             st["trail"] = (st["trail"] + tool_trail)[-120:]
@@ -580,7 +603,7 @@ class ReasoningTrail:
         prev_prev_context = prev_prev["context_md"] if prev_prev else None
 
         embedding = self.embedder.embed(context_md)
-        cpid = self.db.add(session_id, context_md, embedding, todos, tool_trail)
+        cpid = self.db.add(session_id, context_md, embedding, todos, tool_trail, owner=st.get("owner", ""))
 
         # P5: consecutive-identical streak for the stall signal. The streak is
         # incremented whenever a checkpoint is near-identical to the previous
@@ -864,13 +887,25 @@ class ReasoningTrail:
             "checkpoints": self.db.recent(session_id, n),
         }
 
-    def sessions(self) -> list[dict]:
+    def sessions(self, owner: str | None = None) -> list[dict]:
         import time as _time
 
         sessions = self.db.all_sessions()
         now = _time.time()
+        out = []
         for s in sessions:
             st = self._state(s["session_id"])
+            # Owner persists in the DB across restarts; backfill the in-memory
+            # state so subsequent checkpoints keep the same attribution.
+            if s.get("owner") and not st.get("owner"):
+                with self._lock:
+                    st["owner"] = s["owner"]
+            sess_owner = st.get("owner", "")
+            # owner filter: only that user's sessions (unowned sessions are
+            # visible to everyone until a device token claims them).
+            if owner and sess_owner and sess_owner != str(owner):
+                continue
+            s["owner"] = sess_owner
             s["status"] = st["status"]
             s["reason"] = st["reason"]
             s["mode"] = self.mode
@@ -878,7 +913,8 @@ class ReasoningTrail:
             active = bool(until) and (until == float("inf") or now < until)
             s["override"] = active
             s["override_until_closed"] = bool(until == float("inf") and active)
-        return sessions
+            out.append(s)
+        return out
 
     def reset(self) -> None:
         with self._lock:

@@ -5,16 +5,18 @@
 Enable Gemini as Guardian's small-judge LLM and deploy Guardian so it can
 supervise opencode working in any project (not just this repo).
 
-## Plan (current work: lockdown escape hatches)
+## Plan (current work: per-user accounts)
 
-1. Add GUARDIAN_MODE (enforce | watch | ask) to the server gate + endpoints
-2. Add POST /api/reasoning/override (Allow for 5 min) + POST /api/reasoning/mode
-3. Plugin: GUARDIAN_BYPASS=1 no-op escape hatch on next start
-4. Plugin: mode-aware blocking (watch=toast only, ask=block+allow hint)
-5. Plugin: fresh-session lockout fix (arm after first tool use, reset on tool
+1. ✅ Add GUARDIAN_MODE (enforce | watch | ask) to the server gate + endpoints
+2. ✅ Add POST /api/reasoning/override (Allow for 5 min) + POST /api/reasoning/mode
+3. ✅ Plugin: GUARDIAN_BYPASS=1 no-op escape hatch on next start
+4. ✅ Plugin: mode-aware blocking (watch=toast only, ask=block+allow hint)
+5. ✅ Plugin: fresh-session lockout fix (arm after first tool use, reset on tool
    event, block only at 4+ idle turns, only in enforce mode)
-6. Dashboard: User Mode selector + Allow session (5 min) buttons
-7. Re-deploy to Render + fix empty dashboard center
+6. ✅ Dashboard: User Mode selector + Allow session (5 min) buttons
+7. ✅ Re-deploy to Render + fix empty dashboard center
+8. 🔜 Per-user accounts: login-gated dashboard, device tokens, per-user
+   devices/sessions isolation, Connect tab with install commands
 
 ## Progress
 
@@ -41,5 +43,6 @@ A valid, never-shared key is needed before the judge can call Gemini.
 
 ## Next step
 
-Implement the lockdown escape hatches above, restart the server + verify the
-gate, then deploy to Render and point GUARDIAN_URL at the deployed server.
+Restart the server + verify the auth flow, then deploy to Render and point
+GUARDIAN_URL at the deployed server. Register the first (admin) account on the
+deployed dashboard, then set GUARDIAN_DEVICE_TOKEN in this repo's env.

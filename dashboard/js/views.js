@@ -73,6 +73,151 @@ function pill(k, v, tone) {
   return p;
 }
 
+/* ---------- Auth (login / register) ---------- */
+function renderAuth() {
+  const box = $id("auth-screen");
+  box.hidden = false;
+  $id("statusbar").innerHTML = "";
+  $id("view").innerHTML = "";
+  $id("admin-row").hidden = true;
+  box.innerHTML = `<div class="card" style="max-width:440px;margin:40px auto">
+    <h3>Guardian — sign in</h3>
+    <p class="muted" style="margin:0 0 12px">The dashboard is per-account: you only see the devices and
+    sessions connected with your device token. The first account created becomes the admin.</p>
+    <div id="auth-form">
+      <input id="auth-email" placeholder="you@example.com" autocomplete="email" style="width:100%;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--text);padding:8px 10px;font-family:var(--mono);margin-bottom:8px">
+      <input id="auth-password" type="password" placeholder="password (min 8 chars)" autocomplete="current-password" style="width:100%;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--text);padding:8px 10px;font-family:var(--mono);margin-bottom:12px">
+      <div style="display:flex;gap:8px">
+        <button class="btn ok" id="auth-login" style="flex:1;justify-content:center">Sign in</button>
+        <button class="btn ghost" id="auth-register" style="flex:1;justify-content:center">Create account</button>
+      </div>
+      <div class="muted" id="auth-error" style="margin-top:10px;color:var(--red)"></div>
+    </div>
+  </div>`;
+  const err = $id("auth-error");
+  async function act(path) {
+    err.textContent = "";
+    const email = $id("auth-email").value.trim();
+    const password = $id("auth-password").value;
+    try {
+      const res = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || ("HTTP " + res.status));
+      SESSION_TOKEN = data.token;
+      localStorage.setItem("guardian_session", SESSION_TOKEN);
+      location.hash = "#connect";
+      refresh();
+    } catch (e) {
+      err.textContent = e.message;
+    }
+  }
+  $id("auth-login").onclick = () => act("/api/auth/login");
+  $id("auth-register").onclick = () => act("/api/auth/register");
+  $id("auth-password").addEventListener("keydown", (ev) => { if (ev.key === "Enter") act("/api/auth/login"); });
+}
+
+/* ---------- Connect (per-user setup) ---------- */
+function renderConnect(data) {
+  const view = document.getElementById("view");
+  view.innerHTML = "";
+  const auth = data.auth || {};
+  const origin = location.origin;
+
+  const intro = el("div", "card");
+  intro.innerHTML = `<h3>Connect your opencode to this Guardian</h3>
+    <p class="muted" style="margin:0">Every account has a private <b>device token</b>. You paste it into your
+    machine's environment, restart opencode, and Guardian attributes your instances and reasoning sessions to
+    <b>${esc(auth.email || "this account")}</b> — nobody else sees them.</p>`;
+  view.append(intro);
+
+  const step = (n, title, body) => {
+    const c = el("div", "card");
+    c.innerHTML = `<h3><span class="muted">${n}.</span> ${esc(title)}</h3>`;
+    c.append(body);
+    return c;
+  };
+
+  // --- step 1: install the plugin (copy block) ---
+  const installCmd = [
+    `mkdir -p ~/.config/opencode/plugins`,
+    `curl -fsSL ${origin}/plugin/guardian.ts -o ~/.config/opencode/plugins/guardian.ts`,
+    `cd ~/.config/opencode && npm i @opencode-ai/plugin`,
+  ].join("\n");
+  view.append(step(1, "Install the guardian plugin (global, all projects)", copyBlock(installCmd, "install")));
+
+  // --- step 2: set env with YOUR device token (copy block) ---
+  const envCmd = [
+    `# add to ~/.zshrc (or ~/.bashrc)`,
+    `export GUARDIAN_URL="${origin}"`,
+    `export GUARDIAN_DEVICE_TOKEN="${esc(auth.device_token || "")}"`,
+  ].join("\n");
+  view.append(step(2, "Set your environment — device token is private to you", copyBlock(envCmd, "env")));
+
+  // --- step 3: restart opencode ---
+  const restart = el("div");
+  restart.innerHTML = `<p class="muted" style="margin:0">Restart opencode once. The plugin registers on startup and
+    heartbeats every ~30s. Your device appears in <b>Reasoning → Connected opencode instances</b> below.</p>`;
+  view.append(step(3, "Restart opencode", restart));
+
+  // --- step 4: create a plugin (optional) ---
+  const makePlugin = el("div");
+  makePlugin.innerHTML = `<p class="muted" style="margin:0">Guardian is also a template for writing your own opencode
+    plugins. Copy the plugin you just installed and edit it:</p>${copyBlock(
+      `mkdir -p ~/.config/opencode/plugins`,
+      `cp ~/.config/opencode/plugins/guardian.ts ~/.config/opencode/plugins/my-plugin.ts`,
+      `# exports: export const MyPlugin: Plugin = async ({ client, directory, project }) => ({ ... })`,
+      `# hooks: event, tool.execute.before, tool.execute.after, tool.execute.end...`,
+    )}`;
+  view.append(step(4, "Make your own plugin (optional)", makePlugin));
+
+  // --- live status: this account's connected devices ---
+  const devices = (data.instances || []).filter((i) => !i.owner || i.user_email === auth.email);
+  const dcard = el("div", "card");
+  dcard.innerHTML = `<h3>Your connected opencode instances</h3>
+    <p class="muted" style="margin:0 0 10px">${devices.length ? "Registered on this account." : "None yet — follow steps 1–3, then wait for the first heartbeat (≤30s)."}</p>`;
+  if (devices.length) {
+    const t = el("table");
+    t.innerHTML = `<thead><tr><th>instance</th><th>status</th><th>project</th><th>directory</th><th>last seen</th></tr></thead><tbody></tbody>`;
+    const tb = t.querySelector("tbody");
+    devices.forEach((inst) => {
+      const tr = el("tr");
+      const age = Math.max(0, Date.now() - inst.last_seen * 1000);
+      tr.innerHTML = `
+        <td class="plain mono">${esc(inst.instance_id)}</td>
+        <td>${inst.connected ? `<span class="badge approve">CONNECTED</span>` : `<span class="badge reject">OFFLINE (${Math.round(age / 1000)}s ago)</span>`}</td>
+        <td class="plain">${esc(inst.project || "—")}</td>
+        <td class="plain">${esc(inst.directory || "—")}</td>
+        <td class="plain">${tKey(new Date(inst.last_seen * 1000).toISOString())}</td>`;
+      tb.append(tr);
+    });
+    dcard.append(t);
+  }
+  view.append(dcard);
+}
+
+function copyBlock(text, id) {
+  const box = el("div");
+  box.className = "copyblock";
+  const code = el("pre");
+  code.textContent = text;
+  const btn = el("button", "btn ghost");
+  btn.textContent = "copy";
+  btn.style.cssText = "float:right;margin-bottom:6px;padding:4px 10px";
+  btn.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      btn.textContent = "copied ✓";
+      setTimeout(() => { btn.textContent = "copy"; }, 1500);
+    } catch {}
+  };
+  box.append(btn, code);
+  return box;
+}
+
 /* ---------- Requests ---------- */
 function renderRequests(data) {
   const view = document.getElementById("view");
@@ -252,23 +397,26 @@ function renderReasoning(data) {
   const walletFrozen = (data.status && data.status.wallet && data.status.wallet.frozen_sessions) || [];
   const card = el("div", "card");
 
-  // --- connected opencode instances (heartbeat registry) ---
+  // --- connected opencode instances (heartbeat registry, scoped to YOU) ---
+  const auth = data.auth || {};
   const icard = el("div", "card");
-  icard.innerHTML = `<h3>Connected opencode instances <span class="muted">(heartbeat)</span></h3>`;
+  icard.innerHTML = `<h3>Your connected opencode instances <span class="muted">(heartbeat)</span></h3>`;
   if (!instances.length) {
-    icard.append(el("div", "muted", "No opencode instances registered yet. Start opencode in this repo — the plugin registers automatically."));
+    icard.append(el("div", "muted", "No opencode instances registered for this account yet. Open the Connect tab and follow steps 1–3."));
   } else {
     const it = el("table");
-    it.innerHTML = `<thead><tr><th>instance</th><th>status</th><th>project</th><th>session</th><th>last seen</th></tr></thead><tbody></tbody>`;
+    it.innerHTML = `<thead><tr><th>instance</th><th>status</th><th>device</th><th>user</th><th>project</th><th>last seen</th></tr></thead><tbody></tbody>`;
     const tb = it.querySelector("tbody");
     instances.forEach((inst) => {
       const tr = el("tr");
       const age = Math.max(0, (Date.now() - inst.last_seen * 1000));
+      const mine = !inst.owner || inst.user_email === auth.email;
       tr.innerHTML = `
         <td class="plain mono">${esc(inst.instance_id)}</td>
         <td>${inst.connected ? `<span class="badge approve">CONNECTED</span>` : `<span class="badge reject">OFFLINE (${Math.round(age / 1000)}s ago)</span>`}</td>
+        <td class="plain">${esc(inst.hostname || "—")}</td>
+        <td class="plain">${mine ? esc(inst.user_email || "you") : esc(inst.user_email || "—")}</td>
         <td class="plain">${esc(inst.project || "—")}</td>
-        <td class="plain mono">${esc(inst.session_id || "—")}</td>
         <td class="plain">${tKey(new Date(inst.last_seen * 1000).toISOString())}</td>`;
       tb.append(tr);
     });
@@ -284,27 +432,31 @@ function renderReasoning(data) {
   if (!sessions.length) {
     card.append(el("div", "muted", "No checkpoints recorded yet. Start an opencode session with the guardian plugin, or run the demo."));
   } else {
+    const auth = data.auth || {};
     const t = el("table");
-    t.innerHTML = `<thead><tr><th>session</th><th>checkpoints</th><th>status</th><th>override</th><th>reason</th><th></th></tr></thead><tbody></tbody>`;
+    t.innerHTML = `<thead><tr><th>session</th><th>owner</th><th>checkpoints</th><th>status</th><th>override</th><th>reason</th><th></th></tr></thead><tbody></tbody>`;
     const tb = t.querySelector("tbody");
     sessions.forEach((s) => {
       const tr = el("tr");
       const overridden = !!s.override;
       const untilClosed = overridden && !!s.override_until_closed;
+      const mine = !s.owner || s.owner_email === auth.email || (auth && auth.is_admin);
       const ovBadge = overridden
         ? `<span class="badge approve" title="gate forced open by owner">${untilClosed ? "ALLOWED" : "ALLOWED " + (s.override_minutes || "…") + "m"}</span>`
         : `<span class="muted">—</span>`;
       tr.innerHTML = `
         <td class="plain mono">${esc(s.session_id)}</td>
+        <td class="plain">${s.owner ? esc(s.owner_email || s.owner) : '<span class="muted">unowned</span>'}</td>
         <td>${num(s.n)}</td>
         <td>${statusBadge(s.status)}</td>
         <td>${ovBadge}</td>
         <td class="plain muted">${esc(s.reason || "")}</td>
-        <td>
+        <td>${mine ? `
           <button class="btn ghost" data-act="trail" data-session="${esc(s.session_id)}">trail</button>
           <button class="btn ok" data-act="allow" data-session="${esc(s.session_id)}">Allow session</button>
           <button class="btn ghost" data-act="allow5" data-session="${esc(s.session_id)}">Allow 5m</button>
-          ${overridden ? `<button class="btn danger" data-act="close" data-session="${esc(s.session_id)}">Close</button>` : ""}
+          ${overridden ? `<button class="btn danger" data-act="close" data-session="${esc(s.session_id)}">Close</button>` : ""}` : `
+          <button class="btn ghost" data-act="trail" data-session="${esc(s.session_id)}">trail</button>`}
         </td>`;
       const trailBtn = tr.querySelector('[data-act="trail"]');
       trailBtn.onclick = () => loadTrail(s.session_id);
