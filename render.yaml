@@ -13,6 +13,17 @@ services:
       # or use a value unique to your team. Guards the kill switch + demo buttons.
       - key: GUARDIAN_ADMIN_TOKEN
         value: demo
+      # Supervision mode: enforce | watch | ask.
+      #   watch   = NEVER blocks tools, only toasts (safe default)
+      #   enforce = paused/terminated sessions block spendy tools (strict)
+      #   ask     = blocks on pause, but "Allow session" on the dashboard opens
+      #             the gate until the owner closes it
+      - key: GUARDIAN_MODE
+        value: watch
+      # Bulletproof escape hatch: GUARDIAN_BYPASS=1 makes the opencode plugin a
+      # no-op on its next start. Set it only if you feel locked out.
+      - key: GUARDIAN_BYPASS
+        sync: false
       # Optional: free-tier LLM keys. The judge degrades to a deterministic
       # heuristic if none are present, so the demo works without them.
       - key: GEMINI_API_KEY

@@ -45,7 +45,8 @@ GUARDIAN = Guardian(CONFIG, LOG, WALLET)
 # while developing Guardian itself; keep unset (or =1) for real supervision.
 REASONING_DISABLED = os.getenv("GUARDIAN_REASONING_ENABLED", "1").lower() in ("0", "false", "no", "off")
 REASONING = ReasoningTrail(CONFIG, CheckpointDB(CHECKPOINTS_PATH), GUARDIAN.llm, log=LOG, wallet=WALLET,
-                           disabled=REASONING_DISABLED)
+                           disabled=REASONING_DISABLED,
+                           mode=os.getenv("GUARDIAN_MODE", CONFIG.get("supervision", {}).get("mode")))
 GUARDIAN.reasoning = REASONING
 BEAT_LOCK = threading.Lock()
 
@@ -98,6 +99,7 @@ def _data_payload() -> dict:
         "cursor": LOG.cursor(),
         "admin_required": _admin_token() != "demo",
         "beats": ["approve", "reject", "bypass", "loop", "kill", "hallucinate", "recover"],
+        "mode": REASONING.mode,
         "reasoning_sessions": REASONING.sessions(),
         "instances": _instances(),
     }
@@ -159,6 +161,38 @@ def api_reasoning(session_id: str | None = None):
 @app.get("/api/reasoning/gate")
 def api_reasoning_gate(session_id: str = "default"):
     return REASONING.gate(session_id)
+
+
+@app.post("/api/reasoning/override")
+def api_reasoning_override(payload: dict | None = None, x_admin_token: str = Header(default="")):
+    """Owner escape hatch: temporarily allow a paused/terminated session.
+    Default is a 5-minute window. Pass `until_closed: true` to keep the gate
+    open until the owner closes it (clear_override/resume/reset). The verdict
+    is unchanged — only the gate opens."""
+    _require_admin(x_admin_token)
+    session_id = (payload or {}).get("session_id", "default")
+    minutes = float((payload or {}).get("minutes", 5.0))
+    until_closed = bool((payload or {}).get("until_closed", False))
+    return REASONING.override(session_id, minutes=minutes, until_closed=until_closed)
+
+
+@app.post("/api/reasoning/clear-override")
+def api_reasoning_clear_override(payload: dict | None = None, x_admin_token: str = Header(default="")):
+    """Owner closes the override early — the gate returns to the verdict."""
+    _require_admin(x_admin_token)
+    session_id = (payload or {}).get("session_id", "default")
+    return REASONING.clear_override(session_id)
+
+
+@app.post("/api/reasoning/mode")
+def api_reasoning_mode(payload: dict | None = None, x_admin_token: str = Header(default="")):
+    """Switch supervision mode at runtime: enforce | watch | ask."""
+    _require_admin(x_admin_token)
+    mode = (payload or {}).get("mode", "")
+    try:
+        return REASONING.set_mode(mode)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # --- opencode plugin registry (heartbeat) ------------------------------------

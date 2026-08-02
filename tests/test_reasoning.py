@@ -231,6 +231,133 @@ def test_stall_requires_four_identical_checkpoints():
         assert "stall" in pause["reason"]
 
 
+def _paused_session(trail, sid="sp"):
+    for _ in range(2):
+        trail.record(
+            sid,
+            "## Goal\nBuild auth\n\n## Plan\nall tests pass",
+            tool_trail=[{"tool": "bash", "status": "error", "output": "FAILED"}],
+        )
+    assert trail.status(sid)["status"] == "paused"
+    return sid
+
+
+def test_gate_carries_mode_and_override_fields():
+    """M1: gate returns {status, reason, mode, override, allowed}."""
+    cfg = _cfg()
+    with tempfile.TemporaryDirectory() as tmp:
+        _, trail, _ = _env(cfg, tmp)
+        gate = trail.gate("m1")
+        assert set(gate) >= {"status", "reason", "mode", "override", "allowed"}
+        assert gate["mode"] in ("enforce", "watch", "ask")
+        assert gate["allowed"] is True
+
+
+def test_watch_mode_never_blocks_paused_session():
+    """M2: watch mode keeps a paused session's gate open."""
+    cfg = _cfg()
+    with tempfile.TemporaryDirectory() as tmp:
+        _, trail, _ = _env(cfg, tmp)
+        _paused_session(trail, "mw")
+        trail.set_mode("watch")
+        gate = trail.gate("mw")
+        assert gate["mode"] == "watch"
+        assert gate["allowed"] is True
+        assert gate["status"] == "running", "gate must report running so stale plugins can't block"
+        assert trail.status("mw")["status"] == "paused", "true verdict still visible to the dashboard"
+
+
+def test_ask_mode_blocks_then_override_opens_gate():
+    """M3: ask mode blocks a paused session, but Allow-for-5-min opens the gate."""
+    cfg = _cfg()
+    with tempfile.TemporaryDirectory() as tmp:
+        _, trail, _ = _env(cfg, tmp)
+        _paused_session(trail, "ma")
+        trail.set_mode("ask")
+        gate = trail.gate("ma")
+        assert gate["allowed"] is False, "ask mode blocks by default"
+        assert gate["mode"] == "ask"
+        # Owner allows for 5 minutes → gate opens without changing the verdict.
+        res = trail.override("ma", minutes=5)
+        assert res["override"] is True
+        assert trail.gate("ma")["allowed"] is True
+        assert trail.gate("ma")["override"] is True
+        assert trail.status("ma")["status"] == "paused", "verdict unchanged — only the gate opens"
+
+
+def test_override_expires():
+    """M4: a time-boxed override is temporary; it closes after the minutes elapse."""
+    cfg = _cfg()
+    with tempfile.TemporaryDirectory() as tmp:
+        _, trail, _ = _env(cfg, tmp)
+        _paused_session(trail, "mx")
+        trail.set_mode("ask")
+        res = trail.override("mx", minutes=5)
+        assert res["override"] is True
+        assert trail.gate("mx")["allowed"] is True
+        # Simulate the window elapsing: the gate must close again.
+        with trail._lock:
+            trail._sessions["mx"]["override_until"] = 0.0
+        gate = trail.gate("mx")
+        assert gate["override"] is False
+        assert gate["allowed"] is False, "expired override must re-block"
+
+
+def test_override_until_closed_stays_open():
+    """M7: until_closed keeps the gate open with no expiry until cleared."""
+    cfg = _cfg()
+    with tempfile.TemporaryDirectory() as tmp:
+        _, trail, _ = _env(cfg, tmp)
+        _paused_session(trail, "mu")
+        trail.set_mode("ask")
+        res = trail.override("mu", until_closed=True)
+        assert res["until_closed"] is True
+        assert res["override_minutes"] is None
+        # No time-box: the gate stays open regardless of elapsed time.
+        assert trail.gate("mu")["allowed"] is True
+        assert trail.gate("mu")["override"] is True
+        # Owner closes it early → gate returns to the paused verdict.
+        trail.clear_override("mu")
+        gate = trail.gate("mu")
+        assert gate["allowed"] is False, "cleared until_closed override must re-block"
+        # resume() also closes it and clears the verdict.
+        trail.override("mu", until_closed=True)
+        trail.resume("mu")
+        assert trail.gate("mu")["allowed"] is True
+        assert trail.gate("mu")["override"] is False
+
+
+def test_override_in_enforce_mode_also_opens_gate():
+    """M5: the 5-min override works in enforce mode too (escape hatch)."""
+    cfg = _cfg()
+    with tempfile.TemporaryDirectory() as tmp:
+        _, trail, _ = _env(cfg, tmp)
+        _paused_session(trail, "me")
+        assert trail.gate("me")["allowed"] is False
+        trail.override("me", minutes=5)
+        assert trail.gate("me")["allowed"] is True
+        # The session is still paused until the owner really resumes.
+        trail.clear_override("me")
+        assert trail.gate("me")["allowed"] is False
+        trail.resume("me")
+        assert trail.gate("me")["allowed"] is True
+        assert trail.status("me")["status"] == "running"
+
+
+def test_set_mode_rejects_invalid_values():
+    """M6: only enforce/watch/ask are accepted."""
+    cfg = _cfg()
+    with tempfile.TemporaryDirectory() as tmp:
+        _, trail, _ = _env(cfg, tmp)
+        try:
+            trail.set_mode("party")
+            raise AssertionError("invalid mode must raise")
+        except ValueError:
+            pass
+        trail.set_mode("watch")
+        assert trail.mode == "watch"
+
+
 if __name__ == "__main__":
     import traceback
 

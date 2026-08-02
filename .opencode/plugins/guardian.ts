@@ -5,11 +5,25 @@
  *   - after every thinking phase the big model must publish context.md
  *   - every context.md edit is POSTed to the Guardian service, which stores
  *     it with an embedding and runs the objective reasoning signals
- *   - if Guardian says paused/terminated, ALL tools are blocked (throw) —
- *     the big model cannot spend, cannot act, cannot continue
- *   - if the session goes idle N turns without a fresh checkpoint, tools are
- *     blocked with a "publish your state first" message
+ *   - if Guardian says paused/terminated, spendy tools are blocked (throw);
+ *     read-only tools (read/grep/glob/list/skill/question) are NEVER blocked
+ *     so the agent can always inspect the workspace and self-correct
+ *   - writing context.md is ALWAYS allowed (checked first) so the agent can
+ *     publish a checkpoint even while paused — the permanent escape hatch
+ *   - if the session goes idle N turns without a fresh checkpoint, spendy
+ *     tools are blocked with a "publish your state first" message
  *   - a terminated verdict hard-aborts the session via client.session.abort
+ *
+ * Modes (GUARDIAN_MODE, mirrors the server's /api/reasoning/mode):
+ *   enforce — full blocking (default). Stale-guard + paused blocks apply.
+ *   watch   — NEVER blocks. Paused verdicts only toast a warning.
+ *   ask     — paused verdicts block, but the block message points at the
+ *             dashboard's "Allow for 5 min" (POST /api/reasoning/override).
+ *
+ * Bulletproof escape hatches:
+ *   GUARDIAN_BYPASS=1 — the plugin is a complete no-op on the NEXT start.
+ *                       If you ever feel locked out: set it, restart once.
+ *   context.md writes are always allowed and always lift the stale guard.
  *
  * The plugin is the messenger. The wallet refuses because Guardian's state
  * says so — never because this plugin (which runs inside the agent's IDE)
@@ -21,8 +35,25 @@ import type { Plugin } from "@opencode-ai/plugin"
 const GUARDIAN_URL = process.env.GUARDIAN_URL || "http://localhost:8000"
 const GUARDIAN_TOKEN = process.env.GUARDIAN_ADMIN_TOKEN || "demo"
 const CONTEXT_FILE = process.env.GUARDIAN_CONTEXT_FILE || "context.md"
-const MAX_IDLE_TURNS = 2 // idles without a fresh checkpoint before we block
+// Stale-guard: block only after 4 idle turns without a fresh checkpoint
+// (warning toast at 2). This is intentionally generous so a brand-new session
+// that has not yet published its first checkpoint is never locked out.
+const MAX_IDLE_TURNS = 4
+const WARN_IDLE_TURNS = 2
 const HEARTBEAT_MS = 30_000
+
+// GUARDIAN_MODE is read at module load (matches server config). The live gate
+// response from /api/reasoning/gate carries the server's authoritative mode,
+// so a runtime mode switch on the server takes effect immediately.
+function envMode(): string {
+  const m = (process.env.GUARDIAN_MODE || "enforce").trim().toLowerCase()
+  return ["enforce", "watch", "ask"].includes(m) ? m : "enforce"
+}
+
+// GUARDIAN_BYPASS=1: bulletproof escape hatch. The plugin does nothing on the
+// next start — no gate, no stale guard, no heartbeat, no checkpoints. Reads
+// nothing, blocks nothing. Set it in the environment and restart once.
+const BYPASS = process.env.GUARDIAN_BYPASS === "1"
 
 // Read-only tools NEVER get blocked — even when a session is paused or stale,
 // the model can always inspect the workspace to diagnose and self-correct.
@@ -42,12 +73,14 @@ const READ_ONLY_TOOLS = new Set([
   "server.session.info",
 ])
 
-type Verdict = { status: string; reason?: string }
+type Verdict = { status: string; reason?: string; mode?: string; override?: boolean }
 
 const sessions = new Map<string, {
   verdict: Verdict
   idleTurns: number
   lastCheckpoint: number
+  lastToolAt: number
+  armed: boolean
   toolTrail: any[]
   dirty: boolean
 }>()
@@ -55,7 +88,7 @@ const sessions = new Map<string, {
 function sess(id: string) {
   let s = sessions.get(id)
   if (!s) {
-    s = { verdict: { status: "running" }, idleTurns: 0, lastCheckpoint: 0, toolTrail: [], dirty: false }
+    s = { verdict: { status: "running" }, idleTurns: 0, lastCheckpoint: 0, lastToolAt: 0, armed: false, toolTrail: [], dirty: false }
     sessions.set(id, s)
   }
   return s
@@ -146,14 +179,29 @@ function isContextPath(p: string): boolean {
   return typeof p === "string" && p.split("/").pop()!.toLowerCase() === CONTEXT_FILE.toLowerCase()
 }
 
+async function toast(client: any, message: string, variant: "info" | "success" | "warning" | "error") {
+  try {
+    await client.tui.showToast({ body: { message, variant } })
+  } catch {}
+}
+
 export const GuardianPlugin: Plugin = async ({ client, directory, project }) => {
+  // GUARDIAN_BYPASS=1: no-op. Nothing registers, nothing blocks, nothing toasts.
+  if (BYPASS) {
+    console.log("[guardian] GUARDIAN_BYPASS=1 — plugin disabled (no-op escape hatch)")
+    return {}
+  }
+
+  let mode = envMode()
+
   async function refreshVerdict(sessionID: string) {
     const s = sess(sessionID)
     try {
       const res = await fetch(`${GUARDIAN_URL}/api/reasoning/gate?session_id=${encodeURIComponent(sessionID)}`)
       if (res.ok) {
         const data = await res.json()
-        s.verdict = { status: data.status, reason: data.reason }
+        s.verdict = { status: data.status, reason: data.reason, mode: data.mode, override: !!data.override }
+        if (data.mode && ["enforce", "watch", "ask"].includes(data.mode)) mode = data.mode
       }
     } catch {}
   }
@@ -172,13 +220,27 @@ export const GuardianPlugin: Plugin = async ({ client, directory, project }) => 
       if (event.type === "session.idle") {
         const sessionID = (event as any).properties?.sessionID || "default"
         const s = sess(sessionID)
+        // FRESH-SESSION FIX: the stale guard only arms AFTER the session has
+        // used a tool at least once. A brand-new session that simply hasn't
+        // published a checkpoint yet is NOT idle — it is starting up. Never
+        // block before the first tool use.
+        if (!s.armed) return
+        // The guard resets whenever any tool ran recently — idle is only idle
+        // when nothing has happened at all.
+        if (Date.now() - s.lastToolAt < 60_000) {
+          s.idleTurns = 0
+          return
+        }
         if (Date.now() - s.lastCheckpoint > 30_000) {
           s.idleTurns += 1
-          if (s.idleTurns >= MAX_IDLE_TURNS) {
+          if (s.idleTurns === WARN_IDLE_TURNS) {
+            void toast(client, `Guardian: ${MAX_IDLE_TURNS} idle turns without a checkpoint — publish context.md soon`, "warning")
+          }
+          // Only enforce mode hard-blocks on staleness. watch never blocks;
+          // ask toasts too but leaves the door open for the 5-min override.
+          if (s.idleTurns >= MAX_IDLE_TURNS && mode === "enforce") {
             blockReasons.set(sessionID, `context.md stale — publish your current state (${MAX_IDLE_TURNS} turns without a checkpoint)`)
-            try {
-              await client.tui.showToast({ body: { message: "Guardian: checkpoint required before continuing", variant: "warning" } })
-            } catch {}
+            void toast(client, "Guardian: checkpoint required before continuing", "warning")
           }
         } else {
           s.idleTurns = 0
@@ -201,6 +263,11 @@ export const GuardianPlugin: Plugin = async ({ client, directory, project }) => 
       const status = metadata.status || "completed"
       const isCtx = ["write", "edit", "patch"].includes(input.tool) &&
         isContextPath(typeof args?.filePath === "string" ? args.filePath : "")
+      // ANY tool use (even a read) proves the session is alive: it re-arms the
+      // guard (if not armed yet) and resets the idle counter.
+      s.armed = true
+      s.lastToolAt = Date.now()
+      s.idleTurns = 0
       // The checkpoint-file publish is the REPORTING mechanism, not a tool
       // action — don't put it in the trail it triggers. Counting it would
       // trip the repeat-strategy signal on the 3rd identical context.md write
@@ -234,21 +301,40 @@ export const GuardianPlugin: Plugin = async ({ client, directory, project }) => 
       // inspect the workspace and self-correct. Only spendy tools are gated.
       if (READ_ONLY_TOOLS.has(input.tool)) return
 
-      const reason = blockReasons.get(input.sessionID)
-      if (reason) throw new Error(`[guardian] ${reason}`)
+      // watch mode never blocks: advisory only. Skip the gate round-trip too.
+      if (mode === "watch") return
+
+      // A tool is about to run — the session is demonstrably active.
+      s.armed = true
+      s.lastToolAt = Date.now()
+      s.idleTurns = 0
 
       // Fetch the live verdict for spendy tools. Reading files is free; a shell
       // command or an edit is not, so it's worth one round-trip on the money path.
-      try {
-        const res = await fetch(`${GUARDIAN_URL}/api/reasoning/gate?session_id=${encodeURIComponent(input.sessionID)}`)
-        if (res.ok) {
-          const data = await res.json()
-          s.verdict = { status: data.status, reason: data.reason }
+      // Done BEFORE the sticky-block check so an owner override (Allow for 5 min)
+      // can lift even the stale-checkpoint block.
+      await refreshVerdict(input.sessionID)
+
+      // An owner override (Allow for 5 min) opens the gate regardless of the
+      // verdict or the stale guard — that is the point of the escape hatch.
+      if (s.verdict.override) {
+        blockReasons.delete(input.sessionID)
+        return
+      }
+
+      const reason = blockReasons.get(input.sessionID)
+      if (reason) {
+        if (mode === "ask") {
+          void toast(client, `Guardian: ${reason} — Allow for 5 min on the dashboard`, "warning")
         }
-      } catch {}
+        throw new Error(`[guardian] ${reason}`)
+      }
 
       if (s.verdict.status !== "running") {
         const why = s.verdict.reason || `session ${s.verdict.status}`
+        if (mode === "ask") {
+          void toast(client, `Guardian: session ${s.verdict.status} — Allow for 5 min on the dashboard to continue`, "warning")
+        }
         throw new Error(`[guardian] session ${s.verdict.status}: ${why}`)
       }
     },

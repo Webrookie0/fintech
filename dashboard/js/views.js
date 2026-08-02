@@ -285,18 +285,44 @@ function renderReasoning(data) {
     card.append(el("div", "muted", "No checkpoints recorded yet. Start an opencode session with the guardian plugin, or run the demo."));
   } else {
     const t = el("table");
-    t.innerHTML = `<thead><tr><th>session</th><th>checkpoints</th><th>status</th><th>reason</th><th></th></tr></thead><tbody></tbody>`;
+    t.innerHTML = `<thead><tr><th>session</th><th>checkpoints</th><th>status</th><th>override</th><th>reason</th><th></th></tr></thead><tbody></tbody>`;
     const tb = t.querySelector("tbody");
     sessions.forEach((s) => {
       const tr = el("tr");
+      const overridden = !!s.override;
+      const untilClosed = overridden && !!s.override_until_closed;
+      const ovBadge = overridden
+        ? `<span class="badge approve" title="gate forced open by owner">${untilClosed ? "ALLOWED" : "ALLOWED " + (s.override_minutes || "…") + "m"}</span>`
+        : `<span class="muted">—</span>`;
       tr.innerHTML = `
         <td class="plain mono">${esc(s.session_id)}</td>
         <td>${num(s.n)}</td>
         <td>${statusBadge(s.status)}</td>
+        <td>${ovBadge}</td>
         <td class="plain muted">${esc(s.reason || "")}</td>
-        <td><button class="btn ghost" data-session="${esc(s.session_id)}">trail</button></td>`;
-      const btn = tr.querySelector("button");
-      btn.onclick = () => loadTrail(s.session_id);
+        <td>
+          <button class="btn ghost" data-act="trail" data-session="${esc(s.session_id)}">trail</button>
+          <button class="btn ok" data-act="allow" data-session="${esc(s.session_id)}">Allow session</button>
+          <button class="btn ghost" data-act="allow5" data-session="${esc(s.session_id)}">Allow 5m</button>
+          ${overridden ? `<button class="btn danger" data-act="close" data-session="${esc(s.session_id)}">Close</button>` : ""}
+        </td>`;
+      const trailBtn = tr.querySelector('[data-act="trail"]');
+      trailBtn.onclick = () => loadTrail(s.session_id);
+      const allowBtn = tr.querySelector('[data-act="allow"]');
+      allowBtn.onclick = async () => {
+        try { await post("/api/reasoning/override", { session_id: s.session_id, until_closed: true }, ADMIN_TOKEN); refresh(); }
+        catch (e) { alert(e.message); }
+      };
+      const allow5Btn = tr.querySelector('[data-act="allow5"]');
+      allow5Btn.onclick = async () => {
+        try { await post("/api/reasoning/override", { session_id: s.session_id, minutes: 5 }, ADMIN_TOKEN); refresh(); }
+        catch (e) { alert(e.message); }
+      };
+      const closeBtn = tr.querySelector('[data-act="close"]');
+      if (closeBtn) closeBtn.onclick = async () => {
+        try { await post("/api/reasoning/clear-override", { session_id: s.session_id }, ADMIN_TOKEN); refresh(); }
+        catch (e) { alert(e.message); }
+      };
       tb.append(tr);
     });
     card.append(t);

@@ -35,6 +35,18 @@
     <button id="btn-kill" class="btn danger">Kill switch ON</button>
     <button id="btn-unkill" class="btn ok">Release kill switch</button>
     <button id="btn-reset" class="btn ghost">Reset demo</button>
+    <div id="mode-row">
+      <div class="grp2">Supervision mode</div>
+      <div class="modeselect">
+        <select id="mode-select">
+          <option value="enforce">enforce</option>
+          <option value="watch">watch</option>
+          <option value="ask">ask</option>
+        </select>
+        <button id="btn-set-mode" class="btn ghost">apply</button>
+      </div>
+      <div class="modehint" id="mode-hint"></div>
+    </div>
     <div id="admin-row" hidden><input id="admin-token" placeholder="admin token" autocomplete="off"><button id="btn-save-token" class="btn ghost">set</button></div>
   </div>
 </aside>

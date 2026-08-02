@@ -408,16 +408,25 @@ class ReasoningJudge:
 # --------------------------------------------------------------------------- #
 # ReasoningTrail — orchestration + per-session state machine.                 #
 # --------------------------------------------------------------------------- #
+VALID_MODES = ("enforce", "watch", "ask")
+
+
 class ReasoningTrail:
     """Records checkpoints and produces a verdict: running | paused | terminated.
 
     The verdict is what the opencode plugin enforces: a paused/terminated
     session gets its tools blocked and its wallet access revoked. Only the
-    owner (top-up / resume / terminate endpoints) changes the state.
+    owner (top-up / resume / terminate / override endpoints) changes the state.
+
+    Modes (GUARDIAN_MODE env or config, changable at runtime):
+      enforce — paused/terminated sessions block tools (strict)
+      watch   — never block; the gate always allows, status is advisory only
+      ask     — block tools on a paused session, but the owner can temporarily
+                override the gate for N minutes via POST /api/reasoning/override
     """
 
     def __init__(self, cfg: dict, db: CheckpointDB, client: LLMClient, log=None, wallet=None,
-                 disabled: bool = False):
+                 disabled: bool = False, mode: str | None = None):
         self.cfg = cfg
         self.db = db
         self.log = log
@@ -427,6 +436,9 @@ class ReasoningTrail:
         self.disabled = disabled
         self.embedder = Embedder(client)
         self.judge = ReasoningJudge(client, goal=self.goal, policy=self.policy)
+        self.mode = (mode or cfg.get("supervision", {}).get("mode") or "enforce").strip().lower()
+        if self.mode not in VALID_MODES:
+            self.mode = "enforce"
         self._sessions: dict[str, dict] = {}
         self._lock = threading.RLock()
 
@@ -436,7 +448,8 @@ class ReasoningTrail:
             return self._sessions.setdefault(
         session_id,
         {"status": "running", "reason": "", "paused_count": 0, "violations": 0,
-         "warnings": 0, "trail": [], "anchor_goal": "", "stall_streak": 0},
+         "warnings": 0, "trail": [], "anchor_goal": "", "stall_streak": 0,
+         "override_until": 0.0},
             )
 
     def status(self, session_id: str) -> dict:
@@ -448,25 +461,106 @@ class ReasoningTrail:
             "paused_count": st["paused_count"],
             "violations": st["violations"],
             "warnings": st["warnings"],
+            "mode": self.mode,
         }
 
     # --- the money-path gate: plugin asks before every tool -------------------
     def gate(self, session_id: str) -> dict:
-        """Fast, synchronous, no LLM — what the plugin calls in tool.execute.before."""
+        """Fast, synchronous, no LLM — what the plugin calls in tool.execute.before.
+
+        Returns {status, reason, mode, override, allowed}. `override` is true
+        while the owner's allow-for-N-minutes is still in effect, which forces
+        the gate open regardless of the session verdict.
+        """
+        import time as _time
+
         st = self._state(session_id)
+        now = _time.time()
+        until = st.get("override_until", 0.0)
+        # override_until = float("inf") means "until the owner closes it" —
+        # the gate stays open until clear_override()/resume()/reset().
+        override_active = bool(until) and (until == float("inf") or now < until)
         if self.disabled:
             return {
                 "session_id": session_id,
                 "allowed": True,
                 "status": "running",
                 "reason": "reasoning supervision disabled (maintenance mode)",
+                "mode": self.mode,
+                "override": False,
             }
+        # watch mode is advisory only — never block, even if the session is
+        # paused/terminated. The dashboard still shows the true verdict via
+        # status()/sessions(); the gate reports "running" so even a plugin that
+        # only reads status (not `allowed`) can never be blocked in watch mode.
+        if self.mode == "watch":
+            return {
+                "session_id": session_id,
+                "allowed": True,
+                "status": "running",
+                "reason": st["reason"] or f"watch mode — session {st['status']} (not blocking)",
+                "mode": self.mode,
+                "override": False,
+            }
+        allowed = st["status"] == "running" or override_active
         return {
             "session_id": session_id,
-            "allowed": st["status"] == "running",
+            "allowed": allowed,
+            "status": st["status"],
+            "reason": st["reason"],
+            "mode": self.mode,
+            "override": override_active,
+        }
+
+    # --- owner-in-the-loop: temporary allow -----------------------------------
+    def override(self, session_id: str, minutes: float = 5.0, until_closed: bool = False) -> dict:
+        """Open the gate for this session. Does NOT change the verdict — status
+        stays what it was — but the gate allows tools while the override is
+        active. In ask mode this is the intended way to unblock; in enforce mode
+        the session is still paused on the dashboard until the owner resumes.
+
+        Two shapes:
+          minutes > 0       → time-boxed window (default 5).
+          until_closed=True → stays open until the owner closes it via
+                              clear_override()/resume()/reset(). No expiry."""
+        import time as _time
+
+        st = self._state(session_id)
+        with self._lock:
+            if until_closed:
+                st["override_until"] = float("inf")
+            else:
+                minutes = max(0.5, min(float(minutes or 5.0), 120.0))
+                st["override_until"] = _time.time() + minutes * 60.0
+        if self.log:
+            self.log.append("system", event="reasoning_override", session_id=session_id,
+                            minutes=minutes if not until_closed else 0,
+                            until_closed=until_closed, status=st["status"])
+        return {
+            "session_id": session_id,
+            "mode": self.mode,
+            "override": True,
+            "override_minutes": minutes if not until_closed else None,
+            "until_closed": until_closed,
             "status": st["status"],
             "reason": st["reason"],
         }
+
+    def clear_override(self, session_id: str) -> dict:
+        with self._lock:
+            st = self._state(session_id)
+            st["override_until"] = 0.0
+        return self.gate(session_id)
+
+    def set_mode(self, mode: str) -> dict:
+        mode = (mode or "").strip().lower()
+        if mode not in VALID_MODES:
+            raise ValueError(f"mode must be one of {', '.join(VALID_MODES)}")
+        with self._lock:
+            self.mode = mode
+        if self.log:
+            self.log.append("system", event="reasoning_mode", mode=mode)
+        return {"mode": self.mode}
 
     # --- record a checkpoint + decide -----------------------------------------
     def record(self, session_id: str, context_md: str, todos=None, tool_trail=None) -> dict:
@@ -740,6 +834,7 @@ class ReasoningTrail:
             st["reason"] = "resumed by owner"
             st["paused_count"] = 0
             st["stall_streak"] = 0
+            st["override_until"] = 0.0
         if self.wallet is not None:
             try:
                 self.wallet.unfreeze_session(session_id)
@@ -770,11 +865,19 @@ class ReasoningTrail:
         }
 
     def sessions(self) -> list[dict]:
+        import time as _time
+
         sessions = self.db.all_sessions()
+        now = _time.time()
         for s in sessions:
             st = self._state(s["session_id"])
             s["status"] = st["status"]
             s["reason"] = st["reason"]
+            s["mode"] = self.mode
+            until = st.get("override_until", 0.0)
+            active = bool(until) and (until == float("inf") or now < until)
+            s["override"] = active
+            s["override_until_closed"] = bool(until == float("inf") and active)
         return sessions
 
     def reset(self) -> None:

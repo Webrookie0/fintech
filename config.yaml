@@ -33,5 +33,13 @@ llm:
   provider: "gemini"
   judge_model: "gemini-2.5-flash"
 
+# Supervision mode — enforce | watch | ask. Also settable at runtime from the
+# dashboard or POST /api/reasoning/mode.
+#   enforce: paused/terminated sessions block spendy tools (strict).
+#   watch:   never block; the gate always allows, status is advisory only.
+#   ask:     block on pause, but the owner can Allow for 5 min (override).
+supervision:
+  mode: "enforce"
+
 demo:
   beat_delay_seconds: 0.4

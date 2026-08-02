@@ -39,7 +39,9 @@ function payloadSig(d) {
     st.approvals, st.rejections, st.retries, st.violations,
     d.status.wallet.balance,
     d.cursor,
+    d.mode || "enforce",
     (d.instances || []).map((i) => i.connected + ":" + (i.last_seen | 0)).join(","),
+    (d.reasoning_sessions || []).map((s) => (s.override ? 1 : 0) + ":" + s.status).join(","),
   ].join("|");
 }
 
@@ -63,7 +65,16 @@ async function refresh() {
   if (sig === LAST_SIG) return; // nothing changed — keep the current view static
   LAST_SIG = sig;
   renderStatusbar();
-  route();
+  renderModeControl();
+  // A bug in one view must never blank the whole dashboard center: render
+  // defensively and surface the error in the view instead of dying silently.
+  try {
+    route();
+  } catch (e) {
+    console.error("[guardian-dashboard] render failed:", e);
+    const v = $id("view");
+    if (v) v.innerHTML = `<div class="card"><h3>Render error</h3><div class="muted">${esc((e && e.message) || String(e))}</div></div>`;
+  }
 }
 
 function renderStatusbar() {
@@ -77,6 +88,7 @@ function renderStatusbar() {
   bar.innerHTML = "";
   const pills = [
     pill("workflow", statusBadge(st.status), ""),
+    pill("mode", DATA.mode || "enforce", DATA.mode === "enforce" ? "amber" : "brand"),
     pill("agents connected", num(connected), connected ? "green" : "muted"),
     pill("budget left", money(st.budget_remaining), "brand"),
     pill("spent today", money(st.spent_today), "green"),
@@ -88,6 +100,20 @@ function renderStatusbar() {
   ];
   pills.forEach((p2) => bar.append(p2));
   $id("n-req").textContent = st.approvals + st.rejections;
+}
+
+function renderModeControl() {
+  const sel = $id("mode-select");
+  const hint = $id("mode-hint");
+  if (!sel) return;
+  const mode = DATA ? DATA.mode || "enforce" : "enforce";
+  sel.value = mode;
+  const hints = {
+    enforce: "paused/terminated sessions block spendy tools",
+    watch: "never blocks — advisory only",
+    ask: "blocks on pause; Allow session (until you close it) opens the gate",
+  };
+  if (hint) hint.textContent = hints[mode] || "";
 }
 
 function route() {
@@ -173,6 +199,11 @@ function wireControls() {
     ADMIN_TOKEN = $id("admin-token").value.trim() || "demo";
     localStorage.setItem("guardian_token", ADMIN_TOKEN);
     alert("admin token saved");
+  };
+  $id("btn-set-mode").onclick = async () => {
+    const mode = $id("mode-select").value;
+    try { await post("/api/reasoning/mode", { mode }, ADMIN_TOKEN); refresh(); }
+    catch (e) { alert(e.message); }
   };
 }
 

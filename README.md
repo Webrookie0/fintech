@@ -80,9 +80,12 @@ curl -X POST localhost:8000/api/reset    -H "X-Admin-Token: demo"
 | `POST /api/retry` | — (agent) | record a retry |
 | `POST /api/checkpoint` | — (opencode plugin) | post context.md + tool trail → reasoning verdict |
 | `GET /api/reasoning` | — | checkpoint trail / sessions |
-| `GET /api/reasoning/gate` | — | sync gate: is this session allowed to act? |
+| `GET /api/reasoning/gate` | — | sync gate: is this session allowed to act? `{status, reason, mode, override}` |
 | `GET /api/data` | — | full dashboard payload |
 | `GET /api/events?cursor=N` | — | incremental audit events |
+| `POST /api/reasoning/mode` `{mode}` | admin | switch enforce / watch / ask at runtime |
+| `POST /api/reasoning/override` `{session_id, minutes?/until_closed?}` | admin | open the gate for a session (5 min or until closed) |
+| `POST /api/reasoning/clear-override` `{session_id}` | admin | close the override early |
 | `POST /api/beat/{name}` | admin | run a demo beat |
 | `POST /api/kill` `{active}` | admin | kill switch on/off |
 | `POST /api/topup` `{amount}` | admin | owner tops up wallet + resumes session |
@@ -131,9 +134,37 @@ Token count alone isn't a good stop-signal, so v2 watches the agent's
 - Guardian stores each version with an embedding and scores five **objective
   signals**: contradiction (checkpoint claims vs real tool log), stall, churn,
   drift, and repeat-strategy.
-- Strong signals pause the session — the plugin then **blocks every tool** and
-  revokes wallet access. The owner reviews the trail on the Reasoning tab and
-  can top up, resume, or terminate.
+- Strong signals pause the session — the plugin then **blocks spendy tools**
+  (bash, edit, write, webfetch, task) and revokes wallet access. **Read-only
+  tools are never blocked**, and writing `context.md` is always allowed, so the
+  agent can always inspect the workspace, self-correct, and publish a fresh
+  checkpoint to lift the stale-guard itself.
+
+### Supervision modes (`GUARDIAN_MODE`)
+
+| Mode | Behavior |
+|---|---|
+| `watch` | **Never blocks** — advisory only, toasts warnings (safe default) |
+| `enforce` | Paused/terminated sessions block spendy tools (strict) |
+| `ask` | Blocks on pause, but the dashboard's **Allow session** button opens the gate **until you close it** (`until_closed`), or for 5 minutes |
+
+Change it from the dashboard (Supervision mode dropdown) or
+`POST /api/reasoning/mode {mode}` (admin).
+
+### Escape hatches (you can never be locked out)
+
+- **Allow session** — on the Reasoning tab, any session (even paused) gets an
+  *Allow session* button that opens the gate until you close it, plus *Allow
+ 5m* and *Close*. It does **not** change the verdict — the dashboard still shows
+  the true state.
+- **`GUARDIAN_BYPASS=1`** — the bulletproof switch: the opencode plugin becomes
+  a complete no-op on its **next start**. If you ever feel locked out, set it in
+  the environment and restart opencode once. No gate, no stale-guard, nothing.
+- **`context.md` always writes** — even a paused session can publish a
+  checkpoint, which resets the stale-guard and posts a fresh verdict.
+- **Stale-guard is generous** — it only arms after the session's first tool use,
+  resets on any tool event, blocks at 4+ idle turns (warning toast at 2), and
+  only in `enforce` mode.
 
 Run a real session: start the server, then use opencode in this repo — the
 plugin is auto-loaded from `.opencode/plugins/`.
