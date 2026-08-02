@@ -7,7 +7,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-ENV PORT=8000
 ENV GUARDIAN_ADMIN_TOKEN=demo
 ENV GUARDIAN_DATA_DIR=/app/data
 
@@ -15,4 +14,5 @@ EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"
 
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+# Render injects its own PORT (e.g. 10000); honor it instead of hardcoding.
+CMD uvicorn app:app --host 0.0.0.0 --port ${PORT:-8000}

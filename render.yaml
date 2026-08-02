@@ -8,8 +8,7 @@ services:
     plan: free
     healthCheckPath: /healthz
     envVars:
-      - key: PORT
-        value: 8000
+      # PORT is injected by Render itself (the Dockerfile honors ${PORT}).
       # SET THIS before first deploy: opens a browser and edit → Environment,
       # or use a value unique to your team. Guards the kill switch + demo buttons.
       - key: GUARDIAN_ADMIN_TOKEN

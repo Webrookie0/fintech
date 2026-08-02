@@ -27,6 +27,7 @@ class Wallet:
             "balance": float(starting_balance),
             "ledger": [],
             "kill_switch": False,
+            "frozen_sessions": [],
             "reset_count": 0,
         }
         self.load()
@@ -50,6 +51,7 @@ class Wallet:
             return {
                 "balance": round(self._state["balance"], 2),
                 "kill_switch": self._state["kill_switch"],
+                "frozen_sessions": list(self._state["frozen_sessions"]),
                 "ledger": list(self._state["ledger"][-40:][::-1]),
                 "transaction_count": len(self._state["ledger"]),
             }
@@ -78,14 +80,48 @@ class Wallet:
         with self._lock:
             self._state["ledger"] = []
             self._state["kill_switch"] = False
+            self._state["frozen_sessions"] = []
             if balance is not None:
                 self._state["balance"] = float(balance)
             self._state["reset_count"] += 1
             self.save()
             return self.snapshot()
 
+    def top_up(self, amount: float) -> dict:
+        """Owner adds credit to the wallet (explicit re-authorization of spend)."""
+        with self._lock:
+            self._state["balance"] = round(float(self._state["balance"]) + amount, 2)
+            self.save()
+            return self.snapshot()
+
+    # --- session-level freeze (reasoning supervision) ----------------------
+    # The wallet keeps its OWN copy of which sessions are frozen, exactly like
+    # it keeps its own kill-switch flag. Guardian tells the wallet to freeze a
+    # session; the wallet itself refuses any pay() from a frozen session — so
+    # even a direct wallet call bypassing the plugin/API is refused.
+    def freeze_session(self, session_id: str) -> dict:
+        with self._lock:
+            if session_id and session_id not in self._state["frozen_sessions"]:
+                self._state["frozen_sessions"].append(session_id)
+                self.save()
+            return {"frozen_sessions": list(self._state["frozen_sessions"])}
+
+    def unfreeze_session(self, session_id: str) -> dict:
+        with self._lock:
+            if session_id in self._state["frozen_sessions"]:
+                self._state["frozen_sessions"].remove(session_id)
+                self.save()
+            return {"frozen_sessions": list(self._state["frozen_sessions"])}
+
+    def frozen(self, session_id: str = "") -> bool:
+        with self._lock:
+            if session_id in self._state["frozen_sessions"]:
+                return True
+            # no session id given → frozen if ANY session is frozen
+            return bool(self._state["frozen_sessions"]) if not session_id else False
+
     # --- the money path ----------------------------------------------------
-    def pay(self, payment: dict, approval: dict | None = None) -> dict:
+    def pay(self, payment: dict, approval: dict | None = None, session_id: str = "") -> dict:
         """Execute (or refuse) a payment. `approval` is what Guardian issues —
         but the wallet re-checks EVERYTHING itself. A forged or missing approval
         changes nothing: the policy and the wallet's own state decide."""
@@ -97,6 +133,8 @@ class Wallet:
 
             if self._state["kill_switch"]:
                 return refuse("wallet kill switch is ACTIVE — frozen")
+            if session_id in self._state["frozen_sessions"]:
+                return refuse(f"session '{session_id}' is paused/terminated — wallet frozen")
             if approval is not None and not approval.get("approved"):
                 return refuse("approval token rejected by Guardian")
 

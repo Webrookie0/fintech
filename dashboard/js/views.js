@@ -214,6 +214,8 @@ function renderPolicy(data) {
     ["Allowlisted domains", (p.allowlist_domains || []).join(", ")],
     ["Max retries", num(p.max_retries)],
     ["Snapshots without progress", num(p.max_snapshots_without_progress)],
+    ["Identical checkpoints before stall", num(p.min_identical_checkpoints_for_stall || 4)],
+    ["Pauses before auto-terminate", num(p.max_pauses_before_terminate)],
     ["Max estimated tokens per task", num(p.max_estimated_tokens_per_task)],
     ["Kill switch", p.kill_switch ? "ENGAGED" : "off"],
   ];
@@ -239,6 +241,142 @@ function renderAudit(data) {
   card.innerHTML = `<h3>Append-only audit trail — ${num(data.events.length)} events</h3>`;
   card.append(renderFeed(data.events));
   view.append(card);
+}
+
+/* ---------- Reasoning (v2 supervision) ---------- */
+function renderReasoning(data) {
+  const view = document.getElementById("view");
+  view.innerHTML = "";
+  const sessions = data.reasoning_sessions || [];
+  const instances = data.instances || [];
+  const walletFrozen = (data.status && data.status.wallet && data.status.wallet.frozen_sessions) || [];
+  const card = el("div", "card");
+
+  // --- connected opencode instances (heartbeat registry) ---
+  const icard = el("div", "card");
+  icard.innerHTML = `<h3>Connected opencode instances <span class="muted">(heartbeat)</span></h3>`;
+  if (!instances.length) {
+    icard.append(el("div", "muted", "No opencode instances registered yet. Start opencode in this repo — the plugin registers automatically."));
+  } else {
+    const it = el("table");
+    it.innerHTML = `<thead><tr><th>instance</th><th>status</th><th>project</th><th>session</th><th>last seen</th></tr></thead><tbody></tbody>`;
+    const tb = it.querySelector("tbody");
+    instances.forEach((inst) => {
+      const tr = el("tr");
+      const age = Math.max(0, (Date.now() - inst.last_seen * 1000));
+      tr.innerHTML = `
+        <td class="plain mono">${esc(inst.instance_id)}</td>
+        <td>${inst.connected ? `<span class="badge approve">CONNECTED</span>` : `<span class="badge reject">OFFLINE (${Math.round(age / 1000)}s ago)</span>`}</td>
+        <td class="plain">${esc(inst.project || "—")}</td>
+        <td class="plain mono">${esc(inst.session_id || "—")}</td>
+        <td class="plain">${tKey(new Date(inst.last_seen * 1000).toISOString())}</td>`;
+      tb.append(tr);
+    });
+    icard.append(it);
+  }
+  view.append(icard);
+
+  card.innerHTML = `<h3>Reasoning supervision — checkpoints + objective signals</h3>
+    <p class="muted" style="margin:0 0 10px">The big model publishes context.md after every thinking phase. Each version is stored
+    with an embedding and scored against the real tool log. A paused or terminated session has its
+    tools blocked and wallet access revoked until the owner acts.</p>
+    ${walletFrozen.length ? `<div class="muted" style="margin-bottom:8px">Wallet frozen for: ${walletFrozen.map((s) => `<span class="badge reject">${esc(s)}</span>`).join(" ")}</div>` : ""}`;
+  if (!sessions.length) {
+    card.append(el("div", "muted", "No checkpoints recorded yet. Start an opencode session with the guardian plugin, or run the demo."));
+  } else {
+    const t = el("table");
+    t.innerHTML = `<thead><tr><th>session</th><th>checkpoints</th><th>status</th><th>reason</th><th></th></tr></thead><tbody></tbody>`;
+    const tb = t.querySelector("tbody");
+    sessions.forEach((s) => {
+      const tr = el("tr");
+      tr.innerHTML = `
+        <td class="plain mono">${esc(s.session_id)}</td>
+        <td>${num(s.n)}</td>
+        <td>${statusBadge(s.status)}</td>
+        <td class="plain muted">${esc(s.reason || "")}</td>
+        <td><button class="btn ghost" data-session="${esc(s.session_id)}">trail</button></td>`;
+      const btn = tr.querySelector("button");
+      btn.onclick = () => loadTrail(s.session_id);
+      tb.append(tr);
+    });
+    card.append(t);
+  }
+  view.append(card);
+  const detail = el("div", "card");
+  detail.id = "trail-detail";
+  detail.innerHTML = `<h3>Session trail</h3><div class="muted">Select a session to inspect its checkpoint history.</div>`;
+  view.append(detail);
+
+  // Owner actions — reset from the UI instead of a curl. The reset clears the
+  // audit trail, un-pauses every session and unfreezes the wallet.
+  const actions = el("div", "card");
+  actions.innerHTML = `<h3>Owner actions</h3>
+    <p class="muted" style="margin:0 0 10px">A paused/terminated session blocks its agent's tools and freezes the wallet.
+    Only the owner can unblock it. Resetting clears all sessions, the audit trail and the wallet.</p>
+    <button class="btn ghost" id="reasoning-reset" style="color:var(--red);border-color:var(--red)">Reset all sessions &amp; demo state</button>`;
+  const resetBtn = actions.querySelector("button");
+  resetBtn.onclick = async () => {
+    if (!confirm("Reset all sessions, audit trail and wallet?")) return;
+    try { await post("/api/reset", {}, ADMIN_TOKEN); } catch (e) { alert(e.message); }
+    refresh();
+  };
+  view.append(actions);
+}
+
+function signalBadge(name, active) {
+  if (!active) return "";
+  return `<span class="badge reject">${esc(name).toUpperCase()}</span>`;
+}
+
+async function loadTrail(session_id) {
+  const box = document.getElementById("trail-detail");
+  if (!box) return;
+  box.innerHTML = `<h3>Session trail — ${esc(session_id)}</h3><div class="muted">loading…</div>`;
+  let trail;
+  try {
+    const r = await fetch("/api/reasoning?session_id=" + encodeURIComponent(session_id));
+    trail = await r.json();
+  } catch (e) {
+    box.innerHTML = `<h3>Session trail</h3><div class="muted">failed to load: ${esc(e.message)}</div>`;
+    return;
+  }
+  const cps = trail.checkpoints || [];
+  box.innerHTML = `<h3>Session trail — <span class="mono">${esc(session_id)}</span></h3>
+    <div style="margin-bottom:8px">status: ${statusBadge(trail.status.status)}${trail.status.reason ? " <span class='muted'>— " + esc(trail.status.reason) + "</span>" : ""}</div>`;
+  if (!cps.length) {
+    box.append(el("div", "muted", "No checkpoints."));
+    return;
+  }
+  cps.forEach((cp) => {
+    const sigs = (() => { try { return JSON.parse(cp.signals); } catch { return {}; } })();
+    const verdict = (() => { try { return JSON.parse(cp.verdict); } catch { return {}; } })();
+    const row = el("div", "ev");
+    const contradictions = (sigs.contradiction || []).map((c) =>
+      `<div class="muted">claim: “${esc(c.claim)}” · tool ${esc(c.tool)} → ${esc(c.output)}</div>`).join("");
+    const repeats = (sigs.repeat_strategy || []).map((r) => {
+      if (r.count) return `<div class="muted">same <b>${esc(r.tool)}</b> repeated ${r.count}x</div>`;
+      return `<div class="muted">retried ${esc(r.tool)} after earlier ${esc(r.earlier_failure)} failure</div>`;
+    }).join("");
+    const waste = verdict.waste;
+    const wasteRow = waste ? `<div class="msg" style="grid-column:2/4;color:var(--red)">
+      ⏱ ${waste.elapsed_s}s · ~${num(waste.tokens_burned_est)} tokens · ${waste.repeats} repeats<br>
+      ${(waste.evidence || []).map((e) => `· ${esc(e)}`).join("<br>")}
+    </div>` : "";
+    const badges =
+      signalBadge("contradiction", sigs.contradiction && sigs.contradiction.length) +
+      signalBadge("stall", sigs.stall) +
+      signalBadge("churn", sigs.churn) +
+      signalBadge("drift", sigs.drift) +
+      signalBadge("repeat", sigs.repeat_strategy && sigs.repeat_strategy.length);
+    const stateCls = verdict.state === "terminated" ? "bad" : verdict.state === "paused" ? "warn" : "ok";
+    row.innerHTML = `<span class="ts">${tKey(cp.ts)}</span>
+      <span class="tag ${stateCls}">${esc(verdict.state || "running").toUpperCase()}</span>
+      <span class="msg">${badges || '<span class="muted">on track</span>'}</span>
+      ${contradictions ? `<div class="msg" style="grid-column:2/4;color:var(--red)">${contradictions}</div>` : ""}
+      ${repeats ? `<div class="msg" style="grid-column:2/4">${repeats}</div>` : ""}
+      ${wasteRow}`;
+    box.append(row);
+  });
 }
 
 /* ---------- shared event feed ---------- */
@@ -300,6 +438,24 @@ function renderEvent(ev) {
     case "bypass_attempt":
       tag = "bypass"; cls = "bad";
       msg = `forged approval "${esc(ev.forged_approval_id || "")}" sent straight to the wallet`;
+      break;
+    case "reasoning_checkpoint":
+      tag = "reasoning"; cls = ev.verdict_state === "paused" || ev.verdict_state === "terminated" ? "bad" : "info";
+      msg = `checkpoint #${num(ev.checkpoint_id)} · ${esc(ev.verdict_state || "running").toUpperCase()}${ev.reason ? " — " + esc(ev.reason) : ""}` +
+        `${ev.contradiction ? " · CONTRADICTION" : ""}${ev.stall ? " · STALL" : ""}${ev.churn ? " · CHURN" : ""}${ev.drift ? " · DRIFT" : ""}`;
+      break;
+    case "reasoning_tool":
+      tag = "tool"; cls = ev.status === "error" ? "bad" : "info";
+      msg = `${esc(ev.tool)} → ${esc(ev.status === "error" ? ev.output : "ok")}`;
+      if (ev.detail && ev.status === "error") msg += ` <span class="dim">(${esc(ev.detail)})</span>`;
+      break;
+    case "reasoning_verdict":
+      tag = "judge"; cls = ev.state === "paused" || ev.state === "terminated" ? "warn" : "info";
+      msg = `<b>${esc(ev.state).toUpperCase()}</b> · contradiction: ${ev.contradiction} · ${esc(ev.reason)}`;
+      break;
+    case "topup":
+      tag = "owner"; cls = "ok";
+      msg = `top-up +${money(ev.amount)} → balance ${money(ev.balance)}${ev.session_id ? " · " + esc(ev.session_id) : ""}`;
       break;
     case "kill_switch":
       tag = "kill"; cls = ev.active ? "bad" : "info";

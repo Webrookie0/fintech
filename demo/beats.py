@@ -103,6 +103,81 @@ def beat_kill(g, cfg: dict) -> dict:
     return r
 
 
+def beat_hallucinate(g, cfg: dict) -> dict:
+    """v2: the big model publishes a context.md that LIES about the tool log.
+    The reasoning layer catches the contradiction and pauses the session."""
+    g.log.append("agent_action", step="Checkpoint", detail="Agent publishes context.md after its thinking phase.")
+    _sleep(cfg)
+    r1 = g.reasoning.record(
+        "demo",
+        "## Goal\nBuild a working authentication feature\n\n## Plan\n1. Scaffold the auth module\n2. Write the login endpoint",
+        tool_trail=[{"tool": "edit", "input": {"filePath": "auth.py"}, "status": "completed", "output": "created auth.py"}],
+    )
+    _sleep(cfg)
+    g.log.append("agent_action", step="Run tests", detail="Agent runs the test suite…")
+    _sleep(cfg)
+    g.log.append("reasoning_tool", tool="bash", status="error", output="FAILED: 3 tests failed")
+    r2 = g.reasoning.record(
+        "demo",
+        "## Goal\nBuild a working authentication feature\n\n## Plan\nRun the tests — all tests pass now\nShip it",
+        tool_trail=[{"tool": "bash", "input": {"command": "pytest"}, "status": "error", "output": "FAILED: 3 tests failed"}],
+    )
+    _sleep(cfg)
+    g.log.append(
+        "reasoning_verdict",
+        session_id="demo",
+        state=r2["state"],
+        contradiction=bool(r2["signals"].get("contradiction")),
+        reason=r2["reason"],
+    )
+    # v3: even if the paused agent now tries to spend (bypassing the plugin and
+    # hitting the API / wallet directly), the session is frozen — the money
+    # does not move. The wallet refuses on its own.
+    _sleep(cfg)
+    attempt = g.submit_request(
+        {
+            "task": "Purchase OpenAI credits",
+            "recipient": "OpenAI",
+            "amount": 5,
+            "currency": "USD",
+            "reason": "Continue the (hallucinated) work",
+            "estimated_tokens": 8000,
+        },
+        session_id="demo",
+    )
+    g.log.append("agent_action", step="Bypass attempt", detail="Paused agent tries to spend anyway — wallet refuses.")
+    return {**r2, "paused_spend_attempt": attempt}
+
+
+def beat_recover(g, cfg: dict) -> dict:
+    """v2: the owner reviews the trail, tops up the wallet and resumes the
+    paused session. The agent then makes a legitimate purchase."""
+    g.log.append("agent_action", step="Owner", detail="Owner reviews the reasoning trail, tops up $10 and resumes.")
+    _sleep(cfg)
+    g.reasoning.resume("demo")
+    # An owner re-authorization also re-arms a workflow that an earlier demo
+    # beat (the v1 retry loop) had terminated. Only the owner can do this:
+    # clears the termination and the retry debt.
+    if g.memory.status != "running":
+        g.memory.status = "running"
+        g.memory.terminate_reason = ""
+        g.memory.retries = 0
+        g.loop.reset()
+        g.log.append("system", event="workflow_resumed_by_owner")
+    r = g.submit_request(
+        {
+            "task": "Purchase OpenAI credits",
+            "recipient": "OpenAI",
+            "amount": 5,
+            "currency": "USD",
+            "reason": "Resumed after owner review — credits needed to finish",
+            "estimated_tokens": 8000,
+        },
+        session_id="demo",
+    )
+    return r
+
+
 def run_beat(g, cfg: dict, name: str) -> dict:
     from . import beats
 

@@ -16,6 +16,8 @@ policy:
     - api.tavily.com
   max_retries: 3
   max_snapshots_without_progress: 4
+  min_identical_checkpoints_for_stall: 4
+  max_pauses_before_terminate: 3
   max_estimated_tokens_per_task: 50000
 
 wallet:
@@ -26,9 +28,10 @@ agent:
   max_steps: 30
 
 llm:
-  # auto = first provider that has a key (gemini, then openai, then groq); mock = no network
-  provider: "auto"
-  judge_model: ""
+  # gemini = small judge + reasoning judge + embeddings via GEMINI_API_KEY.
+  # auto = first provider that has a key (gemini, then openai, then groq); mock = no network.
+  provider: "gemini"
+  judge_model: "gemini-2.5-flash"
 
 demo:
   beat_delay_seconds: 0.4

@@ -5,6 +5,7 @@ const TABS = {
   overview: { title: "Overview", render: renderOverview },
   requests: { title: "Requests", render: renderRequests },
   snapshots: { title: "Snapshots", render: renderSnapshots },
+  reasoning: { title: "Reasoning", render: renderReasoning },
   wallet: { title: "Wallet", render: renderWallet },
   policy: { title: "Policy", render: renderPolicy },
   audit: { title: "Audit", render: renderAudit },
@@ -16,13 +17,31 @@ const BEATS = {
   bypass: { label: "Direct wallet bypass", sub: "forged token → wallet refuses", icon: "🛡️" },
   loop: { label: "Retry loop", sub: "stuck agent → auto-terminated", icon: "🔁" },
   kill: { label: "Kill switch", sub: "owner freezes everything", icon: "⛔" },
+  hallucinate: { label: "Hallucinated claim", sub: "context.md lies → judge pauses", icon: "🧠" },
+  recover: { label: "Owner top-up + resume", sub: "review → top up → continue", icon: "🔓" },
 };
 
 let DATA = null;
 let ADMIN_TOKEN = localStorage.getItem("guardian_token") || "demo";
 let BUSY = false;
+let LAST_SIG = null;
 
 function $id(x) { return document.getElementById(x); }
+
+// Lightweight fingerprint of the payload — only re-render when the state we
+// show actually changed. Without this, the audit trail and statusbar rebuild
+// every poll, which flashes the whole view every ~1s and looks like an alarm.
+function payloadSig(d) {
+  const st = d.status.state;
+  return [
+    st.status,
+    st.budget_remaining, st.spent_today,
+    st.approvals, st.rejections, st.retries, st.violations,
+    d.status.wallet.balance,
+    d.cursor,
+    (d.instances || []).map((i) => i.connected + ":" + (i.last_seen | 0)).join(","),
+  ].join("|");
+}
 
 async function refresh() {
   try {
@@ -32,7 +51,17 @@ async function refresh() {
     $id("sub").textContent = "offline — " + e.message;
     return;
   }
+  // If the server runs the default token ("demo"), a stale token saved in
+  // localStorage (e.g. from an earlier custom setup) must not override it —
+  // otherwise every admin call 403s with "invalid admin token".
+  if (!DATA.admin_required && ADMIN_TOKEN !== "demo") {
+    ADMIN_TOKEN = "demo";
+    localStorage.removeItem("guardian_token");
+  }
   $id("admin-row").hidden = !DATA.admin_required;
+  const sig = payloadSig(DATA);
+  if (sig === LAST_SIG) return; // nothing changed — keep the current view static
+  LAST_SIG = sig;
   renderStatusbar();
   route();
 }
@@ -43,10 +72,12 @@ function renderStatusbar() {
   const w = DATA.status.wallet;
   const p = DATA.status.policy;
   const kill = !!p.kill_switch;
+  const connected = (DATA.instances || []).filter((i) => i.connected).length;
   const bar = $id("statusbar");
   bar.innerHTML = "";
   const pills = [
     pill("workflow", statusBadge(st.status), ""),
+    pill("agents connected", num(connected), connected ? "green" : "muted"),
     pill("budget left", money(st.budget_remaining), "brand"),
     pill("spent today", money(st.spent_today), "green"),
     pill("balance", money(w.balance), "brand"),
@@ -103,7 +134,7 @@ async function runFullDemo() {
   setBusy(true);
   try {
     await post("/api/reset", {}, ADMIN_TOKEN);
-    for (const name of ["approve", "reject", "bypass", "loop", "kill"]) {
+    for (const name of ["approve", "reject", "bypass", "loop", "hallucinate", "recover", "kill"]) {
       await post("/api/beat/" + name, {}, ADMIN_TOKEN);
       await sleep(350);
     }
@@ -150,7 +181,7 @@ function boot() {
   wireControls();
   window.addEventListener("hashchange", route);
   refresh();
-  setInterval(refresh, 1200);
+  setInterval(refresh, 4000);
 }
 
 boot();

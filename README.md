@@ -62,6 +62,8 @@ From the **Demo Console** on the dashboard, or via API:
 | Policy violation | `$500 → Unknown Wallet` | policy **blocks**, wallet refuses |
 | Direct bypass | Compromised agent calls wallet with a forged token | wallet independently **refuses** |
 | Retry loop | Agent stuck retrying the same call | loop detector **terminates** |
+| Hallucinated claim | Agent's context.md claims tests pass, tool log shows failure | reasoning judge **pauses** with evidence |
+| Owner top-up + resume | Owner reviews trail, tops up, resumes | agent continues |
 | Kill switch | Owner freezes the system | all spending frozen instantly |
 
 ```bash
@@ -76,10 +78,16 @@ curl -X POST localhost:8000/api/reset    -H "X-Admin-Token: demo"
 | `POST /api/request` | — (agent) | submit a transaction intent |
 | `POST /api/snapshot` | — (agent) | post a context snapshot (loop detection) |
 | `POST /api/retry` | — (agent) | record a retry |
+| `POST /api/checkpoint` | — (opencode plugin) | post context.md + tool trail → reasoning verdict |
+| `GET /api/reasoning` | — | checkpoint trail / sessions |
+| `GET /api/reasoning/gate` | — | sync gate: is this session allowed to act? |
 | `GET /api/data` | — | full dashboard payload |
 | `GET /api/events?cursor=N` | — | incremental audit events |
 | `POST /api/beat/{name}` | admin | run a demo beat |
 | `POST /api/kill` `{active}` | admin | kill switch on/off |
+| `POST /api/topup` `{amount}` | admin | owner tops up wallet + resumes session |
+| `POST /api/resume` | admin | owner resumes a paused session |
+| `POST /api/terminate` | admin | owner hard-stops a session |
 | `POST /api/reset` | admin | reset demo state |
 | `GET /healthz` | — | health check |
 
@@ -112,6 +120,23 @@ demo/                scripted beats + seed reset
 The emphasis is on proving that autonomous agents can spend money safely while
 constrained by an **independent** enforcement layer — not on building the
 smartest agent.
+
+## Reasoning supervision (v2)
+
+Token count alone isn't a good stop-signal, so v2 watches the agent's
+*reasoning*, not just its wallet:
+
+- The big model publishes its thinking to `context.md` after each phase; an
+  opencode plugin (`.opencode/plugins/guardian.ts`) posts it to Guardian.
+- Guardian stores each version with an embedding and scores five **objective
+  signals**: contradiction (checkpoint claims vs real tool log), stall, churn,
+  drift, and repeat-strategy.
+- Strong signals pause the session — the plugin then **blocks every tool** and
+  revokes wallet access. The owner reviews the trail on the Reasoning tab and
+  can top up, resume, or terminate.
+
+Run a real session: start the server, then use opencode in this repo — the
+plugin is auto-loaded from `.opencode/plugins/`.
 
 ## Documentation
 

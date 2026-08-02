@@ -40,7 +40,7 @@ class Guardian:
         self.log.append("system", event="guardian_started", judge=self.llm.describe())
 
     # --- the money path -----------------------------------------------------
-    def submit_request(self, intent: dict, actor: str = "agent") -> dict:
+    def submit_request(self, intent: dict, actor: str = "agent", session_id: str = "") -> dict:
         intent = {
             "task": intent.get("task", ""),
             "recipient": intent.get("recipient", ""),
@@ -53,6 +53,20 @@ class Guardian:
 
         if self.policy.kill_switch_active():
             return self._reject(intent, "KILL SWITCH ACTIVE — all spending frozen")
+
+        # Reasoning supervision gate: a paused/terminated session cannot spend,
+        # even if the agent bypasses the opencode plugin and calls the API or
+        # the wallet directly. The wallet keeps its own frozen-session list.
+        reasoning = getattr(self, "reasoning", None)
+        if reasoning is not None:
+            gate = reasoning.gate(session_id or "default")
+            if gate["status"] != "running":
+                self.wallet.freeze_session(session_id or "default")
+                return self._reject(
+                    intent,
+                    f"session {gate['status']}: {gate['reason'] or 'awaiting owner review'}",
+                    source="reasoning",
+                )
 
         if self.memory.status != "running":
             result = {
@@ -81,7 +95,7 @@ class Guardian:
         self.log.append("decision", decision="approve", source=source, approval_id=approval_id,
                         reason=reason, intent=intent)
 
-        wallet_result = self.wallet.pay(intent, approval=approval)
+        wallet_result = self.wallet.pay(intent, approval=approval, session_id=session_id)
         self.log.append("wallet_result", **wallet_result, intent=intent)
         self.memory.approvals += 1
 
@@ -159,6 +173,9 @@ class Guardian:
         self.memory.reset()
         self.loop.reset()
         self.policy.policy["kill_switch"] = False
+        reasoning = getattr(self, "reasoning", None)
+        if reasoning is not None:
+            reasoning.reset()
         self.log.append("system", event="reset")
         return self.status()
 

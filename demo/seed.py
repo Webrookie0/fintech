@@ -31,10 +31,10 @@ def main() -> None:
 
     log_path = data_dir / "events.jsonl"
     wallet_path = data_dir / "wallet.json"
-    if log_path.exists():
-        log_path.unlink()
-    if wallet_path.exists():
-        wallet_path.unlink()
+    checkpoints_path = data_dir / "checkpoints.db"
+    for p in (log_path, wallet_path, checkpoints_path):
+        if p.exists():
+            p.unlink()
 
     log = EventLog(log_path)
     wallet = Wallet(cfg["policy"], wallet_path, starting_balance=cfg["wallet"]["starting_balance_usd"])

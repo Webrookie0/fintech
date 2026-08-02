@@ -3,7 +3,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Guardian — Policy-Enforced Control Plane</title>
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/style.css?v=2">
 </head><body>
 <nav id="nav">
   <div class="brand">GUARDIAN<small>policy-enforced control plane</small></div>
@@ -11,6 +11,7 @@
   <a href="#overview" data-v="overview">Overview</a>
   <a href="#requests" data-v="requests">Requests <span class="n" id="n-req"></span></a>
   <a href="#snapshots" data-v="snapshots">Snapshots</a>
+  <a href="#reasoning" data-v="reasoning">Reasoning</a>
   <a href="#wallet" data-v="wallet">Wallet</a>
   <a href="#policy" data-v="policy">Policy</a>
   <a href="#audit" data-v="audit">Audit</a>
@@ -28,7 +29,7 @@
   <div class="dockbody">
     <p class="hint">Run scripted beats and watch the enforcement layer work live. Every action lands in the audit trail.</p>
     <div class="grp2">Demo beats</div>
-    <button id="btn-alldemo" class="btn" style="border-color:var(--brand);color:var(--brand)"><span>▶ Run full demo <div class="k">approve → reject → bypass → loop → kill</div></span></button>
+    <button id="btn-alldemo" class="btn" style="border-color:var(--brand);color:var(--brand)"><span>▶ Run full demo <div class="k">approve → reject → bypass → loop → hallucinate → recover → kill</div></span></button>
     <div id="beat-buttons"></div>
     <div class="grp2">Controls</div>
     <button id="btn-kill" class="btn danger">Kill switch ON</button>
@@ -37,7 +38,7 @@
     <div id="admin-row" hidden><input id="admin-token" placeholder="admin token" autocomplete="off"><button id="btn-save-token" class="btn ghost">set</button></div>
   </div>
 </aside>
-<script src="/static/js/util.js"></script>
-<script src="/static/js/views.js"></script>
-<script src="/static/js/main.js"></script>
+<script src="/static/js/util.js?v=2"></script>
+<script src="/static/js/views.js?v=2"></script>
+<script src="/static/js/main.js?v=2"></script>
 </body></html>
