@@ -333,7 +333,13 @@ def api_plugin_register(payload: dict, x_admin_token: str = Header(default="")):
             "model": (payload.get("model") or "").strip(),
             "session_id": (payload.get("session_id") or "").strip(),
         }
-    return {"registered": True, "instance_id": instance_id, "timeout_s": INSTANCE_TIMEOUT_S}
+    return {
+        "registered": True,
+        "instance_id": instance_id,
+        "timeout_s": INSTANCE_TIMEOUT_S,
+        "owner": str(user["id"]) if user else "",
+        "user_email": (user or {}).get("email", ""),
+    }
 
 
 @app.get("/api/instances")

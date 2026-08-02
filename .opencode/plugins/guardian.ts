@@ -36,14 +36,42 @@ const GUARDIAN_URL = process.env.GUARDIAN_URL || "http://localhost:8000"
 // Plugin log file. opencode's own log only records permission checks — plugin
 // console output goes to the (invisible) sidecar stdout. Write a real file so
 // the plugin's activity is tailable:  tail -f /tmp/guardian-plugin.log
-const PLUGIN_LOG = process.env.GUARDIAN_PLUGIN_LOG || "/tmp/guardian-plugin.log"
+// Path is cross-platform: /tmp doesn't exist on Windows judges, so resolve via
+// the OS temp dir (macOS/Linux → /tmp, Windows → %TEMP%\guardian-plugin.log).
+const PLUGIN_LOG =
+  process.env.GUARDIAN_PLUGIN_LOG ||
+  (() => {
+    try {
+      const { process } = globalThis as any
+      const path = process?.getBuiltinModule?.("path")
+      const os = process?.getBuiltinModule?.("os")
+      if (os?.tmpdir?.() && path?.join) return path.join(os.tmpdir(), "guardian-plugin.log")
+    } catch {}
+    return "/tmp/guardian-plugin.log"
+  })()
 
+// Reliable append: Bun.write(..., {append:true}) is flaky inside opencode's
+// plugin sandbox (the file ended up overwritten, losing history). Read-modify-
+// write instead; the log is small and writes are rare.
 function log(line: string) {
   const ts = new Date().toISOString()
+  const entry = `${ts} ${line}\n`
   console.log(`[guardian] ${line}`)
   try {
-    const { Bun } = globalThis as any
-    if (Bun?.write) void Bun.write(PLUGIN_LOG, `${ts} ${line}\n`, { append: true })
+    const { Bun, process } = globalThis as any
+    if (Bun?.file && process?.getBuiltinModule) {
+      const fs = process.getBuiltinModule("fs")
+      try {
+        fs.appendFileSync(PLUGIN_LOG, entry)
+      } catch {
+        void Bun.write(PLUGIN_LOG, entry)
+      }
+      return
+    }
+    if (Bun?.write) {
+      const prev = Bun.file(PLUGIN_LOG).exists() ? Bun.file(PLUGIN_LOG).text() : ""
+      void Bun.write(PLUGIN_LOG, prev + entry)
+    }
   } catch {}
 }
 // The plugin identifies itself to Guardian with a DEVICE TOKEN. Every account
@@ -115,6 +143,9 @@ const sessions = new Map<string, {
   dirty: boolean
 }>()
 
+// Log "CONNECTED ..." once per process on the first successful heartbeat.
+let registeredLogged = false
+
 function sess(id: string) {
   let s = sessions.get(id)
   if (!s) {
@@ -160,6 +191,17 @@ async function heartbeat(input: {
       }),
     })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    // Log the FIRST successful registration so a judge sees proof the plugin
+    // reached Guardian (and which account, if any, claimed this instance).
+    if (!registeredLogged) {
+      registeredLogged = true
+      let owner = ""
+      try {
+        const data = await res.json()
+        owner = data.user_email || data.owner || ""
+      } catch {}
+      log(`CONNECTED to Guardian at ${GUARDIAN_URL} (instance ${instanceID})` + (owner ? ` — attributed to ${owner}` : " — UNOWNED (set GUARDIAN_DEVICE_TOKEN to your account's device token)"))
+    }
     return true
   } catch (e) {
     log(`heartbeat failed (Guardian offline?): ${(e as Error).message}`)

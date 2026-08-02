@@ -43,6 +43,6 @@ A valid, never-shared key is needed before the judge can call Gemini.
 
 ## Next step
 
-Restart the server + verify the auth flow, then deploy to Render and point
-GUARDIAN_URL at the deployed server. Register the first (admin) account on the
-deployed dashboard, then set GUARDIAN_DEVICE_TOKEN in this repo's env.
+Deploy to Render (push to main) so the deployed server serves the fixed
+plugin with CONNECTED logging + attribution, then re-install the plugin on the
+judges' PCs from the Connect tab.
