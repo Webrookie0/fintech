@@ -73,7 +73,10 @@ async function refresh() {
   }
   const auth = DATA.auth || {};
   if (!auth.authenticated) {
-    renderAuth();
+    // Only render the auth form ONCE. refresh() polls every ~4s and would
+    // otherwise rebuild the form each tick, wiping whatever the user typed
+    // into the email/password fields.
+    if (!$id("auth-form")) renderAuth();
     return;
   }
   $id("auth-screen").hidden = true;
