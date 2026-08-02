@@ -191,9 +191,11 @@ async function postCheckpoint(sessionID: string, contextPath: string) {
 
 // Is this path the checkpoint file? Case-insensitive on the basename, because
 // the file may be written as CONTEXT.md while the env/fallback name is
-// "context.md" (macOS is a case-insensitive filesystem).
+// "context.md" (macOS is a case-insensitive filesystem). Split on BOTH path
+// separators: Windows opencode hands us backslash paths (C:\...\context.md),
+// so a single split("/") would never match and no checkpoint would ever post.
 function isContextPath(p: string): boolean {
-  return typeof p === "string" && p.split("/").pop()!.toLowerCase() === CONTEXT_FILE.toLowerCase()
+  return typeof p === "string" && p.replace(/\\/g, "/").split("/").pop()!.toLowerCase() === CONTEXT_FILE.toLowerCase()
 }
 
 async function toast(client: any, message: string, variant: "info" | "success" | "warning" | "error") {
