@@ -45,9 +45,16 @@ const HEARTBEAT_MS = 30_000
 // GUARDIAN_MODE is read at module load (matches server config). The live gate
 // response from /api/reasoning/gate carries the server's authoritative mode,
 // so a runtime mode switch on the server takes effect immediately.
+//
+// IMPORTANT: the plugin FAILS OPEN. The starting default is "watch" — the
+// plugin never blocks until the SERVER confirms enforce/ask mode via the gate.
+// If Guardian is offline or unreachable, the plugin stays watch (never blocks),
+// so a dead server can never lock the developer out. An explicit env override
+// only matters when the server is unreachable; the server's gate wins when
+// present.
 function envMode(): string {
-  const m = (process.env.GUARDIAN_MODE || "enforce").trim().toLowerCase()
-  return ["enforce", "watch", "ask"].includes(m) ? m : "enforce"
+  const m = (process.env.GUARDIAN_MODE || "watch").trim().toLowerCase()
+  return ["enforce", "watch", "ask"].includes(m) ? m : "watch"
 }
 
 // GUARDIAN_BYPASS=1: bulletproof escape hatch. The plugin does nothing on the
@@ -301,22 +308,25 @@ export const GuardianPlugin: Plugin = async ({ client, directory, project }) => 
       // inspect the workspace and self-correct. Only spendy tools are gated.
       if (READ_ONLY_TOOLS.has(input.tool)) return
 
-      // watch mode never blocks: advisory only. Skip the gate round-trip too.
-      if (mode === "watch") return
-
       // A tool is about to run — the session is demonstrably active.
       s.armed = true
       s.lastToolAt = Date.now()
       s.idleTurns = 0
 
-      // Fetch the live verdict for spendy tools. Reading files is free; a shell
-      // command or an edit is not, so it's worth one round-trip on the money path.
-      // Done BEFORE the sticky-block check so an owner override (Allow for 5 min)
-      // can lift even the stale-checkpoint block.
+      // Fetch the live verdict + authoritative mode for spendy tools. Reading
+      // files is free; a shell command or an edit is not, so it's worth one
+      // round-trip on the money path. Done BEFORE any block check so:
+      //   - the server's mode (enforce/watch/ask) is always adopted
+      //   - an owner override (Allow session) can lift even the stale block
+      //   - if Guardian is offline the mode stays "watch" → never block
       await refreshVerdict(input.sessionID)
 
-      // An owner override (Allow for 5 min) opens the gate regardless of the
-      // verdict or the stale guard — that is the point of the escape hatch.
+      // watch mode never blocks: advisory only. The SERVER decides this — a
+      // runtime switch on the dashboard takes effect on the next spendy tool.
+      if (mode === "watch") return
+
+      // An owner override (Allow session / until closed) opens the gate
+      // regardless of the verdict or the stale guard — that is the escape hatch.
       if (s.verdict.override) {
         blockReasons.delete(input.sessionID)
         return
